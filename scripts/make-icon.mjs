@@ -1,16 +1,13 @@
 /**
- * 生成 build/icon.png(512×512):纯 Node 手写最小 PNG 编码器。
- * 设计:深色圆角底(#0f1115 透明圆角)+ 蓝色圆(#4f8cff)+ 白色双向切换箭头。
+ * 生成应用图标:build/icon.png(512×512,Linux/macOS 用)+ build/icon.ico(256×256 PNG 内嵌,Windows 用)。
+ * 纯 Node 手写,零依赖:PNG 编码器(CRC32 + zlib)+ ICO 容器(ICONDIR + 内嵌 PNG,Vista+ 支持)。
+ * 设计:深色圆角底(#0f1115)+ 蓝色圆(#4f8cff)+ 白色双向切换箭头。
  * 用法: node scripts/make-icon.mjs
  */
 import zlib from 'node:zlib';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-
-const SIZE = 512;
-const CX = SIZE / 2;
-const CY = SIZE / 2;
 
 // ---- CRC32(PNG chunk 用) ----
 const crcTable = new Uint32Array(256);
@@ -34,64 +31,88 @@ function chunk(type, data) {
   return Buffer.concat([len, body, crc]);
 }
 
-// ---- 像素绘制 ----
-// 颜色
+// ---- 像素绘制(按尺寸参数化,512 与 256 共用同一套比例) ----
 const BG = [0x0f, 0x11, 0x15, 0xff];       // 深底
 const BLUE = [0x4f, 0x8c, 0xff, 0xff];     // 主题蓝
 const WHITE = [0xff, 0xff, 0xff, 0xff];
 
-function pixel(x, y) {
-  // 圆角矩形底板(半径 96),四角透明
-  const r = 96;
-  const inX = Math.min(x, SIZE - 1 - x);
-  const inY = Math.min(y, SIZE - 1 - y);
-  if (inX < r && inY < r) {
-    const dx = r - inX;
-    const dy = r - inY;
-    if (dx * dx + dy * dy > r * r) return [0, 0, 0, 0];
-  }
-  const d = Math.hypot(x - CX, y - CY);
-  if (d > 190) return BG;
+function makePixelFn(size) {
+  const c = size / 2;
+  const R = size * (96 / 512);      // 圆角半径
+  const disc = size * (190 / 512);  // 蓝圆半径
+  return function pixel(x, y) {
+    // 圆角矩形底板,四角透明
+    const inX = Math.min(x, size - 1 - x);
+    const inY = Math.min(y, size - 1 - y);
+    if (inX < R && inY < R) {
+      const dx = R - inX;
+      const dy = R - inY;
+      if (dx * dx + dy * dy > R * R) return [0, 0, 0, 0];
+    }
+    if (Math.hypot(x - c, y - c) > disc) return BG;
 
-  // 双向箭头:上半向右、下半向左(切换意象)
-  // 上箭头横条
-  if (y >= CY - 62 && y <= CY - 42 && x >= CX - 90 && x <= CX + 70) return WHITE;
-  // 上箭头三角头(指向右)
-  if (x >= CX + 30 && x <= CX + 100 && Math.abs(y - (CY - 52)) <= (CX + 100 - x)) return WHITE;
-  // 下箭头横条
-  if (y >= CY + 42 && y <= CY + 62 && x >= CX - 70 && x <= CX + 90) return WHITE;
-  // 下箭头三角头(指向左)
-  if (x >= CX - 100 && x <= CX - 30 && Math.abs(y - (CY + 52)) <= (x - (CX - 100))) return WHITE;
-
-  return BLUE;
+    const u = size / 512; // 比例尺
+    // 双向箭头:上半向右、下半向左(切换意象)
+    if (y >= c - 62 * u && y <= c - 42 * u && x >= c - 90 * u && x <= c + 70 * u) return WHITE;
+    if (x >= c + 30 * u && x <= c + 100 * u && Math.abs(y - (c - 52 * u)) <= (c + 100 * u - x)) return WHITE;
+    if (y >= c + 42 * u && y <= c + 62 * u && x >= c - 70 * u && x <= c + 90 * u) return WHITE;
+    if (x >= c - 100 * u && x <= c - 30 * u && Math.abs(y - (c + 52 * u)) <= (x - (c - 100 * u))) return WHITE;
+    return BLUE;
+  };
 }
 
-// ---- 组装 PNG ----
-const raw = Buffer.alloc(SIZE * (1 + SIZE * 4));
-let o = 0;
-for (let y = 0; y < SIZE; y++) {
-  raw[o++] = 0; // filter: None
-  for (let x = 0; x < SIZE; x++) {
-    const [r_, g, b, a] = pixel(x, y);
-    raw[o++] = r_; raw[o++] = g; raw[o++] = b; raw[o++] = a;
+/** 生成 RGBA PNG Buffer */
+function renderPng(size) {
+  const pixel = makePixelFn(size);
+  const raw = Buffer.alloc(size * (1 + size * 4));
+  let o = 0;
+  for (let y = 0; y < size; y++) {
+    raw[o++] = 0; // filter: None
+    for (let x = 0; x < size; x++) {
+      const [r, g, b, a] = pixel(x, y);
+      raw[o++] = r; raw[o++] = g; raw[o++] = b; raw[o++] = a;
+    }
   }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(size, 0);
+  ihdr.writeUInt32BE(size, 4);
+  ihdr[8] = 8;  // bit depth
+  ihdr[9] = 6;  // color type RGBA
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', zlib.deflateSync(raw, { level: 9 })),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
 }
 
-const ihdr = Buffer.alloc(13);
-ihdr.writeUInt32BE(SIZE, 0);
-ihdr.writeUInt32BE(SIZE, 4);
-ihdr[8] = 8;  // bit depth
-ihdr[9] = 6;  // color type RGBA
-// compression/filter/interlace 均为 0
+/** 把 PNG 包进 ICO 容器(单帧;ICO 的宽高字段是 1 字节,256 表示为 0,故最大 256) */
+function wrapIco(png, size) {
+  if (size > 256) throw new Error('ICO 内嵌 PNG 最大 256×256');
+  const header = Buffer.alloc(6);
+  header.writeUInt16LE(0, 0); // reserved
+  header.writeUInt16LE(1, 2); // type: icon
+  header.writeUInt16LE(1, 4); // count: 1
+  const entry = Buffer.alloc(16);
+  entry[0] = size === 256 ? 0 : size; // width(0 表示 256)
+  entry[1] = size === 256 ? 0 : size; // height
+  entry[2] = 0; // palette
+  entry[3] = 0; // reserved
+  entry.writeUInt16LE(1, 4);  // planes
+  entry.writeUInt16LE(32, 6); // bit count
+  entry.writeUInt32LE(png.length, 8);  // data size
+  entry.writeUInt32LE(22, 12);         // data offset(6 + 16)
+  return Buffer.concat([header, entry, png]);
+}
 
-const png = Buffer.concat([
-  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-  chunk('IHDR', ihdr),
-  chunk('IDAT', zlib.deflateSync(raw, { level: 9 })),
-  chunk('IEND', Buffer.alloc(0)),
-]);
+const outDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'build');
+fs.mkdirSync(outDir, { recursive: true });
 
-const out = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'build', 'icon.png');
-fs.mkdirSync(path.dirname(out), { recursive: true });
-fs.writeFileSync(out, png);
-console.log(`已生成 ${out}(${png.length} 字节)`);
+const png512 = renderPng(512);
+fs.writeFileSync(path.join(outDir, 'icon.png'), png512);
+console.log(`已生成 build/icon.png(${png512.length} 字节)`);
+
+const png256 = renderPng(256);
+const ico = wrapIco(png256, 256);
+fs.writeFileSync(path.join(outDir, 'icon.ico'), ico);
+console.log(`已生成 build/icon.ico(${ico.length} 字节,内嵌 256×256 PNG)`);

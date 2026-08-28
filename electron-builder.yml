@@ -1,4 +1,4 @@
-# electron-builder 配置:Linux 只产 AppImage
+# electron-builder 配置:Linux AppImage;Windows NSIS 安装包;macOS dmg/zip(由 CI 构建)
 appId: com.skillsswitchtool.app
 productName: Skills SwitchTool
 directories:
@@ -12,4 +12,18 @@ files:
 linux:
   target: AppImage
   category: Utility
+  icon: build/icon.png
+win:
+  target: nsis
+  icon: build/icon.ico
+nsis:
+  # 中文安装界面;允许用户选择安装目录
+  language: "2052"
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+mac:
+  target:
+    - dmg
+    - zip
+  category: public.app-category.utilities
   icon: build/icon.png

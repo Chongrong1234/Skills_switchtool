@@ -85,3 +85,18 @@ export async function setActiveProject(id: string | null): Promise<void> {
 export async function setProjectSkills(id: string, skillIds: string[]): Promise<Project | undefined> {
   return updateProject(id, { skills: skillIds });
 }
+
+/** 从所有项目的技能集中剔除指定 skill(uninstall 时调用,避免悬空引用) */
+export async function detachSkillFromProjects(skillIds: string[]): Promise<void> {
+  const ids = new Set(skillIds);
+  const data = await readProjects();
+  let dirty = false;
+  for (const p of data.projects) {
+    const next = p.skills.filter((s) => !ids.has(s));
+    if (next.length !== p.skills.length) {
+      p.skills = next;
+      dirty = true;
+    }
+  }
+  if (dirty) await writeProjects(data);
+}

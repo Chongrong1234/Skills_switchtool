@@ -55,8 +55,13 @@ export async function moveConflictIntoSnapshot(
   snap.manifest.items.push({ agentId, targetPath, action: 'conflict-moved', movedTo: rel });
 }
 
-/** 写 manifest 并裁剪历史快照到最近 5 份 */
+/** 写 manifest 并裁剪历史快照到最近 5 份;空快照(幂等 apply)直接丢弃 */
 export async function finalizeSnapshot(snap: SnapshotHandle): Promise<void> {
+  if (snap.manifest.items.length === 0) {
+    // 没有任何物化动作,保留空快照只会挤占有效历史、让 rollback 先消费空壳
+    await fs.rm(snap.dir, { recursive: true, force: true });
+    return;
+  }
   await fs.writeFile(path.join(snap.dir, 'manifest.json'), JSON.stringify(snap.manifest, null, 2), 'utf8');
   await pruneSnapshots(snap.manifest.projectId);
 }

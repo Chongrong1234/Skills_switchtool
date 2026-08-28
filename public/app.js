@@ -2,12 +2,15 @@
 
 // ---------- 全局状态 ----------
 const state = {
-  view: 'projects',        // 'projects' | 'skills'
+  view: 'projects',        // 'projects' | 'skills' | 'catalog'
   agents: [],              // [{id, displayName, detected, capabilities}]
   projects: [],
   activeProjectId: null,
   skills: [],
   selectedProjectId: null, // 主区当前展示的项目
+  catalog: null,           // 推荐库缓存 {categories, items},null = 未加载/已失效
+  catalogCategory: '',     // 推荐库当前分类过滤('' = 全部)
+  catalogQuery: '',        // 推荐库当前搜索词
 };
 
 // ---------- 工具 ----------
@@ -75,6 +78,7 @@ function render() {
   document.getElementById('btn-new-project').style.display = state.view === 'projects' ? '' : 'none';
   renderSidebarProjects();
   if (state.view === 'projects') renderProjectDetail();
+  else if (state.view === 'catalog') renderCatalog();
   else renderSkillLibrary();
 }
 
@@ -373,6 +377,8 @@ function renderSkillLibrary() {
       <button class="btn btn-primary" id="sk-github">从 GitHub 安装</button>
       <button class="btn" id="sk-local">从本地路径安装</button>
       <button class="btn" id="sk-init">新建我的 Skill</button>
+      <button class="btn" id="sk-export">导出迁移码</button>
+      <button class="btn" id="sk-import">导入迁移码</button>
     </div>
     <div class="skills-grid">
       ${state.skills.map((s) => `
@@ -390,6 +396,8 @@ function renderSkillLibrary() {
   document.getElementById('sk-github').addEventListener('click', openInstallGithubModal);
   document.getElementById('sk-local').addEventListener('click', openInstallLocalModal);
   document.getElementById('sk-init').addEventListener('click', openInitSkillModal);
+  document.getElementById('sk-export').addEventListener('click', openExportModal);
+  document.getElementById('sk-import').addEventListener('click', openImportModal);
   main.querySelectorAll('[data-del-skill]').forEach((btn) =>
     btn.addEventListener('click', () => run(async () => {
       if (!confirm(`确定从库中删除「${btn.dataset.delSkill}」?`)) return;
@@ -471,9 +479,177 @@ function openInitSkillModal() {
   }));
 }
 
+// ---------- 迁移码(仅 github 来源可跨机迁移) ----------
+function openExportModal() {
+  run(async () => {
+    const { code, repos } = await api('GET', '/api/skills/export');
+    const modal = openModal(`
+      <h2>导出迁移码</h2>
+      ${repos.length ? `
+        <div class="form-row">
+          <label>复制这段码,在新环境的「导入迁移码」粘贴即可批量下载(仅含 GitHub 来源,共 ${repos.length} 个仓库)</label>
+          <textarea id="exp-code" rows="4" readonly>${esc(code)}</textarea>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-primary" id="exp-copy">复制</button>
+          <button class="btn" id="m-close">关闭</button>
+        </div>` : `
+        <div class="empty">库中没有 GitHub 来源的 skill,无可导出内容</div>
+        <div class="modal-actions"><button class="btn" id="m-close">关闭</button></div>`}
+    `);
+    modal.querySelector('#m-close').addEventListener('click', closeModal);
+    const copyBtn = modal.querySelector('#exp-copy');
+    if (copyBtn) copyBtn.addEventListener('click', async () => {
+      const ta = modal.querySelector('#exp-code');
+      try {
+        await navigator.clipboard.writeText(ta.value);
+        toast('已复制到剪贴板');
+      } catch {
+        // clipboard API 在非安全上下文(http 非 localhost)不可用,退化为全选手动复制
+        ta.select();
+        toast('自动复制失败,已全选,请手动复制', 'err');
+      }
+    });
+  });
+}
+
+function openImportModal() {
+  const modal = openModal(`
+    <h2>导入迁移码</h2>
+    <div class="form-row"><label>粘贴迁移码(ssw1:...),将从 GitHub 批量安装</label>
+      <textarea id="imp-code" rows="4" placeholder="ssw1:owner/repo,owner2/repo2"></textarea></div>
+    <div id="imp-result"></div>
+    <div class="modal-actions">
+      <button class="btn" id="m-cancel">关闭</button>
+      <button class="btn btn-primary" id="m-ok">导入</button>
+    </div>
+  `);
+  modal.querySelector('#m-cancel').addEventListener('click', closeModal);
+  modal.querySelector('#m-ok').addEventListener('click', () => run(async () => {
+    const code = modal.querySelector('#imp-code').value.trim();
+    if (!code) return toast('请粘贴迁移码', 'err');
+    const btn = modal.querySelector('#m-ok');
+    btn.disabled = true; btn.textContent = '导入中…';
+    const r = await api('POST', '/api/skills/import', { code });
+    await loadAll();
+    render(); // 主区卡片刷新;弹窗保持打开展示明细
+    const lines = [
+      ...r.installed.map((x) => `✓ ${x}  已安装`),
+      ...r.skipped.map((x) => `- ${x}  已在库中,跳过`),
+      ...r.failed.map((f) => `✗ ${f.repo}  ${f.message}`),
+    ];
+    modal.querySelector('#imp-result').innerHTML = lines.length
+      ? `<div class="rec-list">${lines.map((l) => `<div class="rec-item"><div class="rdesc">${esc(l)}</div></div>`).join('')}</div>`
+      : '<div class="empty">迁移码为空</div>';
+    btn.textContent = '已导入';
+    toast(`导入完成:新装 ${r.installed.length},跳过 ${r.skipped.length},失败 ${r.failed.length}`,
+      r.failed.length ? 'err' : 'ok');
+  }));
+}
+
+// ---------- 推荐库视图 ----------
+async function loadCatalog() {
+  state.catalog = await api('GET', '/api/catalog');
+}
+
+/** 当前过滤条件下的条目(分类 + 关键词均在本地过滤,数据来自一次拉取) */
+function catalogFiltered() {
+  const q = state.catalogQuery.trim().toLowerCase();
+  return state.catalog.items
+    .filter((e) => !state.catalogCategory || e.category === state.catalogCategory)
+    .filter((e) => !q || `${e.id} ${e.name} ${e.description}`.toLowerCase().includes(q));
+}
+
+function catalogCardsHtml() {
+  const items = catalogFiltered();
+  if (!items.length) return '<div class="empty">没有匹配的条目</div>';
+  const catName = (id) => (state.catalog.categories.find((c) => c.id === id) || {}).name || id;
+  return items.map((e) => `
+    <div class="skill-card">
+      <div class="chead">
+        <span class="sname">${esc(e.name)}</span>
+        <span class="rstars">★ ${e.stars}</span>
+      </div>
+      <div class="sdesc">${esc(e.description)}</div>
+      <div class="smeta">
+        <span class="tag">${esc(catName(e.category))}</span>
+        <span class="tag">${esc(e.id)}</span>
+      </div>
+      <div class="cbtns">
+        <button class="btn btn-sm btn-primary" data-cat-install="${esc(e.id)}" ${e.installed ? 'disabled' : ''}>
+          ${e.installed ? `已安装(${e.installedCount})` : '安装'}</button>
+        <a class="btn btn-sm" href="${esc(e.url)}" target="_blank" rel="noopener">仓库 ↗</a>
+      </div>
+    </div>`).join('');
+}
+
+/** 只刷新卡片区(搜索/切分类时不动输入框,避免丢失焦点) */
+function refreshCatalogCards(main) {
+  main.querySelector('#cat-list').innerHTML = catalogCardsHtml();
+  bindCatalogInstalls(main);
+}
+
+function bindCatalogInstalls(main) {
+  main.querySelectorAll('[data-cat-install]').forEach((btn) =>
+    btn.addEventListener('click', async () => {
+      const repo = btn.dataset.catInstall;
+      const item = state.catalog.items.find((i) => i.id === repo);
+      btn.disabled = true;
+      btn.textContent = '安装中…';
+      try {
+        const installed = await api('POST', '/api/skills', { source: 'github', uri: item ? item.url : repo });
+        await loadAll();
+        state.catalog = null; // installed 标记已变化,触发重拉
+        toast(`已安装 ${installed.length} 个 skill`);
+        render();
+      } catch (err) {
+        toast(err.message, 'err');
+        btn.disabled = false;
+        btn.textContent = '安装';
+      }
+    }));
+}
+
+function renderCatalog() {
+  const main = document.getElementById('main');
+  if (!state.catalog) {
+    main.innerHTML = '<div class="main-title">推荐库</div><div class="spinner"></div><div class="loading-text">正在加载推荐库…</div>';
+    run(async () => { await loadCatalog(); render(); });
+    return;
+  }
+  main.innerHTML = `
+    <div class="main-title">推荐库</div>
+    <div class="main-sub">精选高 star 的 skills 仓库,一键安装到中央库(整仓安装:仓库内所有 skill 会全部登记)</div>
+    <div class="cat-toolbar">
+      <input type="text" id="cat-q" placeholder="搜索名称 / 描述 / 仓库…" value="${esc(state.catalogQuery)}" />
+    </div>
+    <div class="cat-tabs">
+      <button class="cat-tab ${state.catalogCategory === '' ? 'active' : ''}" data-cat="">全部</button>
+      ${state.catalog.categories.map((c) => `
+        <button class="cat-tab ${state.catalogCategory === c.id ? 'active' : ''}" data-cat="${esc(c.id)}">${esc(c.name)}</button>`).join('')}
+    </div>
+    <div class="skills-grid" id="cat-list">${catalogCardsHtml()}</div>
+  `;
+  main.querySelector('#cat-q').addEventListener('input', (e) => {
+    state.catalogQuery = e.target.value;
+    refreshCatalogCards(main);
+  });
+  main.querySelectorAll('.cat-tab').forEach((t) =>
+    t.addEventListener('click', () => {
+      state.catalogCategory = t.dataset.cat;
+      main.querySelectorAll('.cat-tab').forEach((x) => x.classList.toggle('active', x === t));
+      refreshCatalogCards(main);
+    }));
+  bindCatalogInstalls(main);
+}
+
 // ---------- 启动 ----------
 document.querySelectorAll('.view-btn').forEach((b) =>
-  b.addEventListener('click', () => { state.view = b.dataset.view; render(); }));
+  b.addEventListener('click', () => {
+    state.view = b.dataset.view;
+    if (state.view === 'catalog') state.catalog = null; // 每次进入重拉,保证 installed 标记新鲜
+    render();
+  }));
 document.getElementById('btn-new-project').addEventListener('click', openNewProjectModal);
 document.getElementById('btn-settings').addEventListener('click', openSettingsModal);
 

@@ -1,11 +1,12 @@
 {
   "name": "skills-switchtool",
   "version": "0.1.0",
-  "description": "项目中心化的 Agent Skills 管理工具(Web GUI / Electron 桌面 App)",
+  "description": "项目中心化的 Agent Skills 管理工具(Web GUI / Electron 桌面 App / CLI)",
   "type": "module",
   "main": "electron/main.mjs",
   "bin": {
-    "ssw": "dist/cli.js"
+    "ssw": "dist/cli.js",
+    "skills": "dist/cli.js"
   },
   "scripts": {
     "dev": "tsx src/index.ts",

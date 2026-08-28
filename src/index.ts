@@ -1,5 +1,5 @@
 /**
- * 入口(web 模式):启动 HTTP 服务。
+ * 入口(web 模式):启动 HTTP 服务(REST API + public/ 单页应用)。
  * 端口默认 5174,可用 PORT 环境变量覆盖。
  */
 import { startServer, serverPort } from './serve.js';

@@ -3,12 +3,12 @@ import os from 'node:os';
 import path from 'node:path';
 import type { AgentAdapter } from './types.js';
 
-/** 各 agent 的用户级配置目录名(detect 依据)与项目级 skills 相对目录 */
+/** 各 agent 的用户级配置目录名(detect 依据)与项目级 skills 相对目录(分段,避免 Windows 混合分隔符) */
 interface AgentSpec {
   id: string;
   displayName: string;
-  homeDir: string;       // ~/.xxx
-  skillsSubDir: string;  // 项目内 .xxx/skills
+  homeDir: string;         // ~/.xxx
+  skillsSubDir: string[];  // 项目内如 ['.claude', 'skills']
   capabilities: { hooks: boolean; allowedTools: boolean };
 }
 
@@ -20,7 +20,7 @@ export function makeAdapter(spec: AgentSpec): AgentAdapter {
       return fs.existsSync(path.join(os.homedir(), spec.homeDir));
     },
     projectSkillsDir(projectPath: string): string {
-      return path.join(projectPath, spec.skillsSubDir);
+      return path.join(projectPath, ...spec.skillsSubDir);
     },
     capabilities: spec.capabilities,
   };

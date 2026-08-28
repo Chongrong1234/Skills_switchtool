@@ -1,6 +1,6 @@
 /**
  * 可复用的服务启动函数:确保目录骨架存在 + app.listen。
- * web 模式(src/index.ts)与 Electron 主进程(electron/main.mjs)共用。
+ * 供 Electron 主进程(electron/main.mjs)进程内启动,窗口加载该本机地址。
  */
 import type { Server } from 'node:http';
 import { ensureSkeleton } from './core/paths.js';

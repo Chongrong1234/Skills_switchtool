@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { applyProject, unapplyProject } from '../src/core/apply.js';
 import { initSkill, skillDirOf } from '../src/core/library.js';
 import { createProject, setProjectSkills } from '../src/core/projects.js';
+import { readRegistry, writeRegistry } from '../src/core/registry.js';
 import { listSnapshots, rollback } from '../src/core/snapshot.js';
 import { claudeCode } from '../src/adapters/claude-code.js';
 import { kimiCode } from '../src/adapters/kimi-code.js';
@@ -147,6 +148,40 @@ describe('apply', () => {
     await applyProject(project.id);
     const second = await applyProject(project.id);
     expect(second.applied).toHaveLength(0); // 已是正确链接,跳过
+  });
+
+  it('技能集中有缺失 skill 时警告并跳过,不中断其余 apply', async () => {
+    const ok = await initSkill('ok-skill', '正常');
+    const ghost = await initSkill('ghost-skill', '会被卸载');
+    const project = await createProject({
+      name: 'demo',
+      path: projectPath,
+      agents: ['claude-code'],
+      applyMode: 'symlink',
+    });
+    await setProjectSkills(project.id, [ok.id, ghost.id]);
+    // 直接删掉库目录与注册表条目,模拟悬空引用(绕过 uninstall 的绑定清理)
+    await fs.rm(skillDirOf(ghost), { recursive: true, force: true });
+    await writeRegistry((await readRegistry()).filter((s) => s.id !== ghost.id));
+
+    const result = await applyProject(project.id);
+    expect(result.applied).toHaveLength(1);
+    expect(result.applied[0].skillName).toBe('ok-skill');
+    expect(result.warnings.some((w) => w.includes(ghost.id))).toBe(true);
+  });
+
+  it('幂等 apply 不产生空快照', async () => {
+    const skill = await initSkill('snap-skill', '快照');
+    const project = await createProject({
+      name: 'demo',
+      path: projectPath,
+      agents: ['claude-code'],
+      applyMode: 'symlink',
+    });
+    await setProjectSkills(project.id, [skill.id]);
+    await applyProject(project.id);
+    await applyProject(project.id); // 幂等,无任何物化动作
+    expect(await listSnapshots(project.id)).toHaveLength(1);
   });
 
   it('快照每项目最多保留 5 份', async () => {

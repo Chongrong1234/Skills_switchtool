@@ -4,6 +4,6 @@ export const cursor = makeAdapter({
   id: 'cursor',
   displayName: 'Cursor',
   homeDir: '.cursor',
-  skillsSubDir: '.cursor/skills',
+  skillsSubDir: ['.cursor', 'skills'],
   capabilities: { hooks: false, allowedTools: false },
 });

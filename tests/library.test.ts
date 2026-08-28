@@ -11,9 +11,13 @@ import {
   parseFrontmatter,
   skillDirOf,
   uninstall,
+  updateSkill,
   validateSkillDir,
 } from '../src/core/library.js';
-import { getSkill } from '../src/core/registry.js';
+import { libraryDir } from '../src/core/paths.js';
+import { createProject, getProject, setProjectSkills } from '../src/core/projects.js';
+import { getSkill, readRegistry, upsertSkill } from '../src/core/registry.js';
+import type { SkillEntry } from '../src/core/types.js';
 
 let tmp: string;
 
@@ -84,9 +88,86 @@ describe('library', () => {
 
   it('uninstall 删除库目录与注册表记录', async () => {
     const entry = await initSkill('gone-skill', '马上被删');
-    expect(await uninstall(entry.id)).toBe(true);
+    const r = await uninstall(entry.id);
+    expect(r.removed).toBe(true);
+    expect(r.alsoRemoved).toEqual([]);
     expect(await getSkill(entry.id)).toBeUndefined();
     await expect(fs.access(skillDirOf(entry))).rejects.toThrow();
-    expect(await uninstall(entry.id)).toBe(false);
+    expect((await uninstall(entry.id)).removed).toBe(false);
+  });
+
+  it('uninstall 同时解除项目中的绑定', async () => {
+    const entry = await initSkill('bound-skill', '被项目绑定');
+    const p = await createProject({ name: 'demo', path: '/tmp/demo', agents: [], applyMode: 'symlink' });
+    await setProjectSkills(p.id, [entry.id]);
+    await uninstall(entry.id);
+    expect((await getProject(p.id))?.skills).toEqual([]);
+  });
+
+  it('updateSkill 对库内自建的 local skill 只刷新元数据,不做自杀式复制', async () => {
+    const entry = await initSkill('self-upd', '旧描述');
+    const dir = skillDirOf(entry);
+    // 用户直接编辑库内的 SKILL.md
+    await fs.writeFile(
+      path.join(dir, 'SKILL.md'),
+      '---\nname: self-upd\ndescription: 新描述\n---\n',
+      'utf8',
+    );
+    const next = await updateSkill(entry.id);
+    expect(next.description).toBe('新描述');
+    expect(next.tags).toEqual(['custom']); // 原有 tags 不丢
+    // 目录内容仍在(没被 rm 掉)
+    expect(await fs.readFile(path.join(dir, 'SKILL.md'), 'utf8')).toContain('新描述');
+  });
+
+  it('installFromLocal 拒绝源目录已在库内(防止 rm 后自我复制)', async () => {
+    const entry = await initSkill('in-lib', '库内');
+    await expect(installFromLocal(skillDirOf(entry))).rejects.toThrow('已在库中');
+  });
+
+  /** 手工造一个 github 仓库条目(不走 git clone) */
+  async function seedGithubSkill(id: string, uri: string): Promise<SkillEntry> {
+    const entry: SkillEntry = {
+      id,
+      name: id.split(':').pop() || 'root',
+      description: 'd',
+      source: { type: 'github', uri },
+      tags: [],
+      installedAt: new Date().toISOString(),
+    };
+    await fs.mkdir(skillDirOf(entry), { recursive: true });
+    await upsertSkill(entry);
+    return entry;
+  }
+
+  it('uninstall 根级 github skill 时连带清理同仓库条目与整仓目录', async () => {
+    await seedGithubSkill('o/r:', 'o/r');
+    await seedGithubSkill('o/r:sub', 'o/r');
+    const repoDir = path.join(libraryDir(), 'github__o__r');
+    const r = await uninstall('o/r:');
+    expect(r.removed).toBe(true);
+    expect(r.alsoRemoved).toEqual(['o/r:sub']);
+    expect(await readRegistry()).toEqual([]);
+    await expect(fs.access(repoDir)).rejects.toThrow();
+  });
+
+  it('uninstall 最后一个子路径 github skill 时删除整个仓库目录', async () => {
+    await seedGithubSkill('o/r2:sub', 'o/r2');
+    const repoDir = path.join(libraryDir(), 'github__o__r2');
+    const r = await uninstall('o/r2:sub');
+    expect(r.removed).toBe(true);
+    expect(r.alsoRemoved).toEqual([]);
+    await expect(fs.access(repoDir)).rejects.toThrow();
+  });
+
+  it('uninstall 子路径 skill 且仓库还有其他条目时保留仓库目录', async () => {
+    const a = await seedGithubSkill('o/r3:a', 'o/r3');
+    await seedGithubSkill('o/r3:b', 'o/r3');
+    const repoDir = path.join(libraryDir(), 'github__o__r3');
+    const r = await uninstall('o/r3:a');
+    expect(r.alsoRemoved).toEqual([]);
+    await expect(fs.access(repoDir)).resolves.toBeUndefined();
+    expect(await getSkill('o/r3:b')).toBeDefined();
+    await expect(fs.access(skillDirOf(a))).rejects.toThrow();
   });
 });

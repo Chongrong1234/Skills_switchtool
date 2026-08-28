@@ -258,3 +258,32 @@ body {
 }
 .skill-card .sdesc { color: var(--text-dim); font-size: 12px; min-height: 32px; }
 .toolbar { display: flex; gap: 10px; margin: 18px 0; flex-wrap: wrap; }
+
+/* ---------- 推荐库 ---------- */
+.cat-toolbar { margin: 16px 0 10px; }
+.cat-toolbar input {
+  width: 100%;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 8px 12px;
+  font-size: 13px;
+}
+.cat-tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+.cat-tab {
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-dim);
+  border-radius: 999px;
+  padding: 4px 12px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.cat-tab:hover { background: var(--bg-hover); }
+.cat-tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.skill-card .chead { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.skill-card .rstars { color: var(--yellow); font-size: 12px; white-space: nowrap; }
+.skill-card .cbtns { display: flex; gap: 8px; margin-top: 4px; }
+.skill-card .cbtns a.btn { text-decoration: none; display: inline-block; }
+.skill-card .cbtns .btn[disabled] { opacity: 0.55; cursor: default; }

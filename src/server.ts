@@ -3,9 +3,10 @@
  * 统一错误格式 { error: string }。
  */
 import express, { type NextFunction, type Request, type Response } from 'express';
+import fsSync from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { adapters } from './adapters/index.js';
+import { adapters, getAdapter } from './adapters/index.js';
 import { applyProject, unapplyProject } from './core/apply.js';
 import {
   initSkill,
@@ -24,14 +25,47 @@ import {
   setProjectSkills,
   updateProject,
 } from './core/projects.js';
+import { CATALOG_CATEGORIES, listCatalogWithInstalled } from './core/catalog.js';
+import { exportSkillsCode, importSkillsCode, parseSkillsCode } from './core/migrate.js';
 import { recommendForProject } from './core/recommend.js';
+import { readRegistry } from './core/registry.js';
 import { rollback } from './core/snapshot.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+/**
+ * 解析 public/ 目录:从本文件位置逐级上探,取第一个存在 index.html 的 public/。
+ * 覆盖三种布局:dist/(dev/打包 asar)、release/cli/(CLI 单文件)、以及项目根直跑。
+ * 都找不到时返回第一候选(行为同旧版,静态页 404 但 API 仍可用)。
+ */
+function resolvePublicDir(): string {
+  let dir = __dirname;
+  for (let i = 0; i < 4; i++) {
+    dir = path.dirname(dir);
+    const candidate = path.join(dir, 'public');
+    if (fsSync.existsSync(path.join(candidate, 'index.html'))) return candidate;
+  }
+  return path.join(__dirname, '..', 'public');
+}
+
 // 统一把异步 handler 的错误交给错误中间件
 const h = (fn: (req: Request, res: Response) => Promise<void>) =>
   (req: Request, res: Response, next: NextFunction) => fn(req, res).catch(next);
+
+/** 校验 agents 数组(与 CLI project create 行为一致);合法返回 null,否则返回错误信息 */
+function validateAgents(agents: unknown): string | null {
+  if (!Array.isArray(agents)) return 'agents 必须是数组';
+  const unknown = agents.filter((id) => typeof id !== 'string' || !getAdapter(id));
+  return unknown.length ? `未知 agent: ${unknown.join(', ')}` : null;
+}
+
+/** 校验 skillIds 数组且都存在于库中(与 CLI project bind 行为一致) */
+async function validateSkillIds(skillIds: unknown): Promise<string | null> {
+  if (!Array.isArray(skillIds)) return 'skillIds 必须是数组';
+  const registry = await readRegistry();
+  const missing = skillIds.filter((id) => !registry.some((s) => s.id === id));
+  return missing.length ? `库中不存在这些 skill: ${missing.join(', ')}` : null;
+}
 
 export function createApp(): express.Express {
   const app = express();
@@ -60,6 +94,10 @@ export function createApp(): express.Express {
     if (applyMode && !['symlink', 'copy'].includes(applyMode)) {
       return void res.status(400).json({ error: 'applyMode 只能是 symlink 或 copy' });
     }
+    if (agents !== undefined) {
+      const err = validateAgents(agents);
+      if (err) return void res.status(400).json({ error: err });
+    }
     const project = await createProject({ name, path: p, agents: agents ?? [], applyMode: applyMode ?? 'symlink' });
     res.status(201).json(project);
   }));
@@ -74,6 +112,14 @@ export function createApp(): express.Express {
     const { name, agents, skills, applyMode } = req.body ?? {};
     if (applyMode && !['symlink', 'copy'].includes(applyMode)) {
       return void res.status(400).json({ error: 'applyMode 只能是 symlink 或 copy' });
+    }
+    if (agents !== undefined) {
+      const err = validateAgents(agents);
+      if (err) return void res.status(400).json({ error: err });
+    }
+    if (skills !== undefined) {
+      const err = await validateSkillIds(skills);
+      if (err) return void res.status(400).json({ error: err });
     }
     const patch: Record<string, unknown> = {};
     if (name !== undefined) patch.name = name;
@@ -117,7 +163,8 @@ export function createApp(): express.Express {
   // 绑定/更新项目技能集
   app.post('/api/projects/:id/skills', h(async (req, res) => {
     const { skillIds } = req.body ?? {};
-    if (!Array.isArray(skillIds)) return void res.status(400).json({ error: 'skillIds 必须是数组' });
+    const err = await validateSkillIds(skillIds);
+    if (err) return void res.status(400).json({ error: err });
     const project = await setProjectSkills(req.params.id, skillIds);
     if (!project) return void res.status(404).json({ error: '项目不存在' });
     res.json(project);
@@ -126,6 +173,18 @@ export function createApp(): express.Express {
   // ---- skills ----
   app.get('/api/skills', h(async (_req, res) => {
     res.json(await listSkills());
+  }));
+
+  // 迁移码:导出库中 github 来源的仓库简写集合;导入即逐仓安装(局部失败不中断)
+  app.get('/api/skills/export', h(async (_req, res) => {
+    const code = exportSkillsCode(await listSkills());
+    res.json({ code, repos: parseSkillsCode(code) });
+  }));
+
+  app.post('/api/skills/import', h(async (req, res) => {
+    const { code } = req.body ?? {};
+    if (!code || typeof code !== 'string') return void res.status(400).json({ error: 'code 必填' });
+    res.json(await importSkillsCode(code));
   }));
 
   app.post('/api/skills', h(async (req, res) => {
@@ -137,9 +196,9 @@ export function createApp(): express.Express {
   }));
 
   app.delete('/api/skills/:id', h(async (req, res) => {
-    const ok = await uninstall(req.params.id);
-    if (!ok) return void res.status(404).json({ error: 'skill 不存在' });
-    res.json({ ok: true });
+    const r = await uninstall(req.params.id);
+    if (!r.removed) return void res.status(404).json({ error: 'skill 不存在' });
+    res.json({ ok: true, alsoRemoved: r.alsoRemoved });
   }));
 
   // 自建 skill 脚手架
@@ -148,6 +207,16 @@ export function createApp(): express.Express {
     if (!name || !description) return void res.status(400).json({ error: 'name 与 description 必填' });
     const entry = await initSkill(name, description);
     res.status(201).json(entry);
+  }));
+
+  // ---- catalog 推荐库(内置精选目录,安装复用 POST /api/skills)----
+  app.get('/api/catalog', h(async (req, res) => {
+    const category = req.query.category ? String(req.query.category) : undefined;
+    const query = req.query.q ? String(req.query.q) : undefined;
+    res.json({
+      categories: CATALOG_CATEGORIES,
+      items: await listCatalogWithInstalled({ category, query }),
+    });
   }));
 
   // ---- recommend ----
@@ -159,7 +228,7 @@ export function createApp(): express.Express {
   }));
 
   // 托管前端单页应用
-  app.use(express.static(path.join(__dirname, '..', 'public')));
+  app.use(express.static(resolvePublicDir()));
 
   // 统一错误处理
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {

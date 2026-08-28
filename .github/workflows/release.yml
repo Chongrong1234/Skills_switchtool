@@ -1,0 +1,56 @@
+# 多平台 Release 构建:push v* tag 或手动触发
+# matrix 三平台:Linux → AppImage;Windows → NSIS;macOS → dmg + zip(未签名,用户首次需右键打开)
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write # softprops/action-gh-release 上传产物需要
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: --linux AppImage
+            artifacts: release/*.AppImage
+          - os: windows-latest
+            target: --win nsis
+            artifacts: release/*.exe
+          - os: macos-latest
+            target: --mac dmg zip
+            artifacts: |
+              release/*.dmg
+              release/*.zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 编译 TypeScript
+        run: npm run build
+
+      - name: 构建并打包(electron-builder)
+        run: npx electron-builder ${{ matrix.target }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 供 electron-builder 识别仓库;不发布
+
+      - name: 上传产物到 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.artifacts }}
+          fail_on_unmatched_files: true
+        # push tag 时上传到该 tag 的 release;workflow_dispatch 无 tag 时 action 会新建 draft,可接受

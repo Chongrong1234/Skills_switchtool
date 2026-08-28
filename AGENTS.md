@@ -17,7 +17,7 @@
 
 1. **Web GUI**:Express 托管 `public/` 单页应用(原生 HTML/CSS/JS,**无构建步骤**)。
 2. **Electron 桌面 App**:主进程内**进程内启动** Express(`127.0.0.1` + 随机空闲端口),不依赖外部 node 进程;单实例锁,窗口全关即退出。
-3. **CLI(`ssw`)**:commander 实现,纯命令行非交互,适合服务器;子命令完整映射 core 能力,全局 `--json` 输出。
+3. **CLI(`ssw`,别名 `skills`)**:commander 实现,子命令纯命令行非交互,适合服务器;子命令完整映射 core 能力,全局 `--json` 输出。**不带参数启动(TTY 下)进入交互式终端面板**(`src/tui.ts`,零依赖:stdin raw 模式 + ANSI 渲染);非 TTY 裸跑打印帮助。
 
 ## 技术栈
 
@@ -56,6 +56,8 @@ src/
     snapshot.ts          # 快照/回滚;MAX_SNAPSHOTS = 5
     recommend.ts         # 技术栈检测(package.json/go.mod/Cargo.toml/pyproject.toml)+ GitHub Search API;
                          #   24h 缓存(cache/);断网/限流降级返回 { items: [], message },绝不抛异常
+    migrate.ts           # 迁移码:ssw1:owner/repo,... 仅含 github 来源,按仓库去重;
+                         #   importSkillsCode 幂等跳过已有、单仓失败不中断;installFn 可注入(测试)
   adapters/
     types.ts             # AgentAdapter 接口(id/displayName/detect/projectSkillsDir/capabilities/validate?)
     factory.ts           # makeAdapter(spec):detect 依据 ~/<homeDir> 是否存在,skills 目录 = <项目根>/<skillsSubDir>
@@ -63,7 +65,9 @@ src/
     index.ts             # adapters 注册表 + getAdapter(id)
   server.ts              # Express 应用:createApp(),REST API + 托管 public/;统一错误格式 { "error": "..." }
   serve.ts               # startServer(port, host?) 可复用启动函数(web / Electron / CLI serve 三处共用)
-  cli.ts                 # ssw 入口:全部子命令;id|name 寻址(id 精确优先,name 歧义列候选报错);--json
+  cli.ts                 # ssw/skills 入口:全部子命令;id|name 寻址(id 精确优先,name 歧义列候选报错);
+                         #   --json;无参数且 TTY 时动态 import tui.js 进终端面板,非 TTY 打印帮助
+  tui.ts                 # 终端交互面板:项目列表 + ↑↓/Enter/a/u/r/s/q 按键;stdin raw 模式 + ANSI 整帧重绘
   index.ts               # web 模式入口:listen(默认 5174,PORT 覆盖)
 electron/main.mjs        # Electron 主进程:动态 import dist/serve.js,127.0.0.1+端口 0,BrowserWindow 加载
 public/                  # 原生单页应用(index.html / app.js / style.css),无构建步骤;深/浅双主题:
@@ -71,7 +75,7 @@ public/                  # 原生单页应用(index.html / app.js / style.css),�
                          #   index.html head 内联脚本在首屏前恢复主题
 scripts/                 # make-icon.mjs(生成图标)、build-cli.mjs(esbuild 打 CLI 单文件,注入 createRequire)
 tests/                   # vitest,每文件对应一个 core 模块 + cli.test.ts 端到端
-electron-builder.yml     # 打包配置:仅 Linux AppImage → release/,只带 dist/ electron/ public/ package.json
+electron-builder.yml     # 打包配置:Linux AppImage + Windows NSIS + macOS dmg/zip → release/,只带 dist/ electron/ public/ package.json;图标 build/icon.png + build/icon.ico
 ```
 
 新增 agent 适配器:在 `src/adapters/` 加一个 spec 文件并在 `index.ts` 的 `adapters` 数组注册即可,引擎不用动。
@@ -93,7 +97,7 @@ electron-builder.yml     # 打包配置:仅 Linux AppImage → release/,只带 d
 - 测试文件在 `tests/*.test.ts`,每个 core 模块一个对应文件;`cli.test.ts` 是端到端测试,用 `child_process` 跑**编译产物** `dist/cli.js`(`beforeAll` 里先自动跑 `npm run build`)。
 - **隔离约定(必须遵守)**:测试在 `beforeEach` 里把 `process.env.SSW_HOME` 指向 `fs.mkdtemp` 临时目录,`afterEach` 里删除该环境变量并 `rm` 临时目录——绝不触碰真实 `~/.skills-switch`。涉及真实文件系统的测试保持串行(这也是 `pool: 'forks'` 的原因)。
 - 网络相关测试注入假 `fetch`(`recommendForProject(path, name, fetchImpl)` 的第三参),不打真实 GitHub API。
-- 提交改动前跑 `npm test`,当前基线:7 个文件 48 个用例全绿。
+- 提交改动前跑 `npm test`,当前基线:11 个文件 86 个用例全绿。
 
 ## 安全注意事项
 

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
- * ssw —— Skills SwitchTool 命令行版(服务器/无 GUI 环境用)。
- * 纯命令行非交互;全部子命令映射 core 能力;全局 --json 输出便于脚本化。
+ * ssw / skills —— Skills SwitchTool 命令行版(服务器/无 GUI 环境用)。
+ * 子命令为纯命令行非交互;全部子命令映射 core 能力;全局 --json 输出便于脚本化。
+ * 不带任何参数启动(TTY 下)时进入交互式终端面板(见 tui.ts);非 TTY 则打印帮助。
  * 错误输出到 stderr 且退出码非零;成功输出到 stdout。
  */
 import { Command } from 'commander';
@@ -25,10 +26,11 @@ import {
   setProjectSkills,
 } from './core/projects.js';
 import { recommendForProject } from './core/recommend.js';
+import { CATALOG, CATALOG_CATEGORIES, listCatalogWithInstalled } from './core/catalog.js';
+import { exportSkillsCode, importSkillsCode, parseSkillsCode } from './core/migrate.js';
 import { rollback } from './core/snapshot.js';
 import type { Project } from './core/types.js';
 import { readRegistry } from './core/registry.js';
-import { startServer, serverPort } from './serve.js';
 
 const program = new Command();
 program
@@ -51,7 +53,7 @@ function out(cmd: Command, data: unknown, human: () => string): void {
 function fail(err: unknown): never {
   console.error(`错误: ${err instanceof Error ? err.message : String(err)}`);
   process.exitCode = 1;
-  // 主动退出,避免长驻句柄(如 serve 之外的意外 listener)挂住进程
+  // 主动退出,避免意外残留的长驻句柄挂住进程
   process.exit(1);
 }
 
@@ -290,11 +292,14 @@ leaf(
   }),
 );
 
-leaf(skillCmd.command('remove').description('从库中卸载 skill').argument('<id>', 'skill id')).action(
+leaf(skillCmd.command('remove').description('从库中卸载 skill(同时解除各项目的绑定)').argument('<id>', 'skill id')).action(
   wrap(async (cmd, id: string) => {
-    const ok = await uninstall(id);
-    if (!ok) throw new Error(`skill 不存在: ${id}`);
-    out(cmd, { removed: id }, () => `已卸载: ${id}`);
+    const r = await uninstall(id);
+    if (!r.removed) throw new Error(`skill 不存在: ${id}`);
+    out(cmd, r, () =>
+      `已卸载: ${id}` +
+      (r.alsoRemoved.length ? `\n连带移除同仓库条目: ${r.alsoRemoved.join(', ')}` : ''),
+    );
   }),
 );
 
@@ -320,6 +325,33 @@ leaf(skillCmd.command('update').description('更新 skill(省略 id 则更新全
       if (!targets.length) return '(没有 github 来源的 skill 需要更新)';
       return results.map((r) => `${r.ok ? '✓' : '✗'} ${r.id}${r.ok ? '' : `  ${r.message}`}`).join('\n');
     });
+  }),
+);
+
+// ---------- 迁移码 ----------
+leaf(skillCmd.command('export').description('导出迁移码(仅 github 来源;新环境 ssw skill import 粘贴即可还原)')).action(
+  wrap(async (cmd) => {
+    const code = exportSkillsCode(await listSkills());
+    out(cmd, { code, repos: parseSkillsCode(code) }, () =>
+      parseSkillsCode(code).length ? code : '(库中没有 github 来源的 skill)');
+  }),
+);
+
+leaf(
+  skillCmd.command('import').description('粘贴迁移码,批量安装其中的 github skills').argument('<code>', '迁移码(ssw1:...)'),
+).action(
+  wrap(async (cmd, code: string) => {
+    const r = await importSkillsCode(code);
+    out(cmd, r, () => {
+      const lines = [
+        ...r.installed.map((repo) => `✓ ${repo}  已安装`),
+        ...r.skipped.map((repo) => `- ${repo}  已在库中,跳过`),
+        ...r.failed.map((f) => `✗ ${f.repo}  ${f.message}`),
+      ];
+      return lines.length ? lines.join('\n') : '(迁移码为空)';
+    });
+    // 有失败项时退出码非零,方便脚本判断(结果明细仍打 stdout)
+    if (r.failed.length) process.exitCode = 1;
   }),
 );
 
@@ -352,17 +384,75 @@ leaf(
   }),
 );
 
-// ---------- serve ----------
+// ---------- catalog 推荐库 ----------
+const catalogCmd = leaf(
+  program
+    .command('catalog')
+    .description('推荐库:内置精选高 star skills 目录,按 star 降序')
+    .option('--category <id>', '只看某个分类(id 见 --json 输出的 categories)')
+    .option('--q <keyword>', '关键词过滤(名称/描述/仓库)'),
+).action(
+  wrap(async (cmd, opts: { category?: string; q?: string }) => {
+    const items = await listCatalogWithInstalled({ category: opts.category, query: opts.q });
+    out(cmd, { categories: CATALOG_CATEGORIES, items }, () => {
+      const catName = (id: string) => CATALOG_CATEGORIES.find((c) => c.id === id)?.name ?? id;
+      const lines: string[] = [];
+      for (const e of items) {
+        lines.push(
+          `★ ${String(e.stars).padStart(6)}  ${e.name}  [${catName(e.category)}]  ${e.id}${e.installed ? `  (已安装 ${e.installedCount})` : ''}`,
+        );
+        lines.push(`          ${e.description}`);
+      }
+      if (!items.length) lines.push('(无匹配条目)');
+      lines.push(`共 ${items.length} 条;安装: ssw catalog install <owner/repo>`);
+      return lines.join('\n');
+    });
+  }),
+);
+
+leaf(
+  catalogCmd
+    .command('install')
+    .description('安装推荐库条目(整仓安装,仓库内全部 skill 都会登记)')
+    .argument('<repo>', '推荐库条目 id(owner/repo)'),
+).action(
+  wrap(async (cmd, repo: string) => {
+    const inCatalog = CATALOG.some((e) => e.id.toLowerCase() === repo.toLowerCase());
+    const installed = await installFromGithub(repo);
+    out(cmd, { inCatalog, installed }, () =>
+      (inCatalog ? '' : `提示: ${repo} 不在推荐库中,已按普通 GitHub 仓库处理\n`) +
+      `已安装 ${installed.length} 个 skill:\n` +
+      installed.map((s) => `  ${s.id}  ${s.name}`).join('\n'),
+    );
+  }),
+);
+
+// ---------- serve(web GUI) ----------
 program
   .command('serve')
   .description('启动 Web GUI 服务(默认端口 5174)')
   .option('--port <port>', '监听端口', '5174')
   .action(
     wrap(async (_cmd, opts: { port: string }) => {
+      const { startServer, serverPort } = await import('./serve.js');
       const server = await startServer(Number(opts.port));
       console.log(`Skills SwitchTool 已启动: http://localhost:${serverPort(server)}`);
-      // serve 是长驻命令:保持进程,不 return 后由 listener 维持事件循环
+      // serve 是长驻命令:保持进程,由 listener 维持事件循环
     }),
   );
 
-await program.parseAsync(process.argv);
+// 不带任何参数启动:TTY 下进入交互式终端面板,非 TTY(管道/脚本)打印帮助
+if (process.argv.length <= 2) {
+  if (process.stdin.isTTY) {
+    try {
+      const { startTui } = await import('./tui.js');
+      await startTui();
+    } catch (err) {
+      fail(err);
+    }
+  } else {
+    program.outputHelp();
+  }
+} else {
+  await program.parseAsync(process.argv);
+}

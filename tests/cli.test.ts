@@ -181,4 +181,10 @@ describe('ssw CLI', () => {
     expect(r.code).not.toBe(0);
     expect(r.stderr).toContain('--github 或 --local 之一');
   });
+
+  it('裸跑(非 TTY)打印帮助并退出 0,不挂起(TTY 下才进交互面板)', async () => {
+    const r = await cli();
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain('Usage: ssw');
+  });
 });

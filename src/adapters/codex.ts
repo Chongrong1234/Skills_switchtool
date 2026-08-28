@@ -4,6 +4,6 @@ export const codex = makeAdapter({
   id: 'codex',
   displayName: 'Codex',
   homeDir: '.codex',
-  skillsSubDir: '.codex/skills',
+  skillsSubDir: ['.codex', 'skills'],
   capabilities: { hooks: true, allowedTools: true },
 });

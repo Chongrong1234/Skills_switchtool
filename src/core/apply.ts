@@ -48,13 +48,17 @@ export async function applyProject(projectId: string): Promise<ApplyResult> {
   if (!project) throw new Error(`项目不存在: ${projectId}`);
   const registry = await readRegistry();
   const skills: SkillEntry[] = [];
+  const result: ApplyResult = { applied: [], warnings: [] };
   for (const sid of project.skills) {
     const entry = registry.find((s) => s.id === sid);
-    if (!entry) throw new Error(`库中找不到 skill: ${sid}`);
+    if (!entry) {
+      // 悬空引用(如注册表被手改/损坏):警告并跳过,不中断整个 apply
+      result.warnings.push(`库中找不到 skill: ${sid},已跳过(可重新安装或 bind 移除该引用)`);
+      continue;
+    }
     skills.push(entry);
   }
 
-  const result: ApplyResult = { applied: [], warnings: [] };
   const snap = await createSnapshot(projectId);
 
   for (const agentId of project.agents) {

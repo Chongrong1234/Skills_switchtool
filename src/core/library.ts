@@ -7,12 +7,45 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { libraryDir } from './paths.js';
-import { getSkill, readRegistry, removeSkill, upsertSkill } from './registry.js';
+import { detachSkillFromProjects } from './projects.js';
+import { getSkill, readRegistry, upsertSkill, writeRegistry } from './registry.js';
 import type { SkillEntry } from './types.js';
 
 const execFileP = promisify(execFile);
 
 export class LibraryError extends Error {}
+
+/**
+ * 执行 git 子命令。Windows 等环境 git 可能不在 PATH(spawn ENOENT),
+ * 统一包装成可读的 LibraryError 而不是裸崩溃。
+ */
+async function runGit(args: string[]): Promise<void> {
+  try {
+    await execFileP('git', args);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === 'ENOENT') {
+      throw new LibraryError('未找到 git 命令(请先安装 Git 并加入 PATH);从 GitHub 安装/更新 skill 需要 git');
+    }
+    throw new LibraryError(`git ${args[0]} 失败: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/** skill 名称合法性:小写字母/数字/连字符开头规则 + Windows 保留名黑名单(CON/PRN 等建目录会失败) */
+const WINDOWS_RESERVED = new Set([
+  'con', 'prn', 'aux', 'nul',
+  'com1', 'com2', 'com3', 'com4', 'com5', 'com6', 'com7', 'com8', 'com9',
+  'lpt1', 'lpt2', 'lpt3', 'lpt4', 'lpt5', 'lpt6', 'lpt7', 'lpt8', 'lpt9',
+]);
+
+export function assertValidSkillName(name: string): void {
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) {
+    throw new LibraryError(`skill 名称 "${name}" 非法:必须是小写字母/数字/连字符,且以字母或数字开头`);
+  }
+  if (WINDOWS_RESERVED.has(name)) {
+    throw new LibraryError(`skill 名称 "${name}" 是 Windows 保留文件名,无法在 Windows 上创建目录,请改名`);
+  }
+}
 
 /** 解析 SKILL.md 的 YAML frontmatter(仅支持单行 key: value,够用即可) */
 export function parseFrontmatter(content: string): Record<string, string> | null {
@@ -41,6 +74,8 @@ export async function validateSkillDir(dir: string): Promise<{ name: string; des
   if (!fm || !fm.name || !fm.description) {
     throw new LibraryError(`SKILL.md frontmatter 非法(name/description 不能为空): ${dir}`);
   }
+  // 名称会作为目录名(库内 + 各 agent 项目目录),必须在各平台文件系统上合法
+  assertValidSkillName(fm.name);
   return { name: fm.name, description: fm.description };
 }
 
@@ -73,8 +108,9 @@ export async function installFromGithub(uri: string): Promise<SkillEntry[]> {
   await fs.rm(dest, { recursive: true, force: true });
   await fs.mkdir(libraryDir(), { recursive: true });
   try {
-    await execFileP('git', ['clone', '--depth', '1', cloneUrl, dest]);
+    await runGit(['clone', '--depth', '1', cloneUrl, dest]);
   } catch (err) {
+    if (err instanceof LibraryError) throw err;
     throw new LibraryError(`git clone 失败: ${err instanceof Error ? err.message : String(err)}`);
   }
 
@@ -117,6 +153,10 @@ export async function installFromLocal(dir: string): Promise<SkillEntry> {
   const { name, description } = await validateSkillDir(abs); // SKILL.md 缺失/非法时拒绝
   const id = `local:${name}`;
   const dest = path.join(libraryDir(), `local__${name}`);
+  if (abs === dest) {
+    // 源即库内目录:若先 rm 再 cp 会变成自我复制(数据丢失),直接拒绝
+    throw new LibraryError(`源目录已在库中,无需重复安装: ${abs}`);
+  }
   await fs.rm(dest, { recursive: true, force: true });
   await fs.mkdir(libraryDir(), { recursive: true });
   await fs.cp(abs, dest, { recursive: true });
@@ -132,15 +172,48 @@ export async function installFromLocal(dir: string): Promise<SkillEntry> {
   return entry;
 }
 
-/** 卸载:删除库目录与注册表记录 */
-export async function uninstall(id: string): Promise<boolean> {
+export interface UninstallResult {
+  removed: boolean;
+  alsoRemoved: string[]; // 连带移除的同仓库条目 id(卸载根级 skill 会删整仓)
+}
+
+/** github 条目的仓库键("owner/repo");非 github 来源返回 null */
+function githubRepoKey(entry: SkillEntry): string | null {
+  if (entry.source.type !== 'github') return null;
+  return entry.id.split(':')[0];
+}
+
+function githubRepoDir(repoKey: string): string {
+  const [owner, repo] = repoKey.split('/');
+  return path.join(libraryDir(), `github__${owner}__${repo}`);
+}
+
+/**
+ * 卸载:删除库目录与注册表记录,并解除所有项目中的绑定(避免悬空引用)。
+ * github 仓库级规则:卸载根级 skill 会删除整仓,同仓库其它条目连带移除;
+ * 卸载子路径 skill 时,若该仓库已无其它登记条目,整仓目录一并删除。
+ */
+export async function uninstall(id: string): Promise<UninstallResult> {
   const entry = await getSkill(id);
-  if (!entry) return false;
-  await fs.rm(skillDirOf(entry), { recursive: true, force: true });
-  // github 仓库可能整体是一个目录,若仓库内已无其它登记的 skill 子路径,这里只删自己即可;
-  // 简化处理:根级 skill 删除整仓,子路径 skill 只删子目录。
-  await removeSkill(id);
-  return true;
+  if (!entry) return { removed: false, alsoRemoved: [] };
+  const registry = await readRegistry();
+  const repoKey = githubRepoKey(entry);
+  const repoEntries = repoKey ? registry.filter((s) => githubRepoKey(s) === repoKey) : [];
+  const isRepoRoot = repoKey !== null && entry.id === `${repoKey}:`;
+
+  const doomed = isRepoRoot ? repoEntries : [entry];
+  const doomedIds = new Set(doomed.map((s) => s.id));
+
+  if (repoKey && doomedIds.size === repoEntries.length) {
+    // 整仓删除:根级 skill 的库目录即整仓;或这是该仓库最后一个登记条目
+    await fs.rm(githubRepoDir(repoKey), { recursive: true, force: true });
+  } else {
+    await fs.rm(skillDirOf(entry), { recursive: true, force: true });
+  }
+
+  await writeRegistry(registry.filter((s) => !doomedIds.has(s.id)));
+  await detachSkillFromProjects([...doomedIds]);
+  return { removed: true, alsoRemoved: doomed.filter((s) => s.id !== id).map((s) => s.id) };
 }
 
 /** 更新:github 来源 git pull;local 来源重新从原路径复制 */
@@ -150,7 +223,15 @@ export async function updateSkill(id: string): Promise<SkillEntry> {
   if (entry.source.type === 'github') {
     const { owner, repo } = normalizeGithubUri(entry.source.uri);
     const repoDir = path.join(libraryDir(), `github__${owner}__${repo}`);
-    await execFileP('git', ['-C', repoDir, 'pull', '--ff-only']);
+    await runGit(['-C', repoDir, 'pull', '--ff-only']);
+    const { name, description } = await validateSkillDir(skillDirOf(entry));
+    const next = { ...entry, name, description };
+    await upsertSkill(next);
+    return next;
+  }
+  // local:源就是库内目录时(initSkill 自建的 skill)只刷新元数据;
+  // 直接走 installFromLocal 会先 rm 再 cp 同一目录,导致数据丢失
+  if (path.resolve(entry.source.uri) === skillDirOf(entry)) {
     const { name, description } = await validateSkillDir(skillDirOf(entry));
     const next = { ...entry, name, description };
     await upsertSkill(next);
@@ -162,9 +243,7 @@ export async function updateSkill(id: string): Promise<SkillEntry> {
 
 /** 自建脚手架:在中央库生成一个合法 skill 并登记 */
 export async function initSkill(name: string, description: string): Promise<SkillEntry> {
-  if (!name || !/^[a-z0-9][a-z0-9-]*$/.test(name)) {
-    throw new LibraryError('skill 名称必须是小写字母/数字/连字符,且以字母或数字开头');
-  }
+  assertValidSkillName(name);
   if (!description) throw new LibraryError('description 不能为空');
   const id = `local:${name}`;
   const dest = path.join(libraryDir(), `local__${name}`);

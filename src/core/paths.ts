@@ -2,6 +2,7 @@
  * ~/.skills-switch/ 目录骨架的路径常量。
  * 每次调用都重新读取 SSW_HOME 环境变量,便于测试用临时目录隔离。
  */
+import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -32,7 +33,6 @@ export function cacheDir(): string {
 
 /** 启动时确保目录骨架存在 */
 export async function ensureSkeleton(): Promise<void> {
-  const fs = await import('node:fs/promises');
   for (const dir of [sswHome(), libraryDir(), snapshotsDir(), cacheDir()]) {
     await fs.mkdir(dir, { recursive: true });
   }
