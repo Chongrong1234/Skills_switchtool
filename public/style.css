@@ -1,5 +1,6 @@
-/* Skills SwitchTool — 深色主题,仿 cc-switch 风格 */
-:root {
+/* Skills SwitchTool — 主题变量,仿 cc-switch 风格 */
+/* 深色为默认主题;:root 兜底,保证未设置 data-theme 时也是深色 */
+:root, [data-theme="dark"] {
   --bg: #0f1115;
   --bg-panel: #171a21;
   --bg-card: #1d212b;
@@ -13,6 +14,22 @@
   --red: #e5534b;
   --yellow: #d8a531;
   --radius: 10px;
+}
+
+/* 浅色主题:同套变量换值,accent 加深一档保证白字对比度 */
+[data-theme="light"] {
+  --bg: #f3f4f7;
+  --bg-panel: #ffffff;
+  --bg-card: #eceef3;
+  --bg-hover: #dfe3ec;
+  --border: #d3d8e2;
+  --text: #1c2330;
+  --text-dim: #5c6675;
+  --accent: #2f6fe4;
+  --accent-hover: #4f8cff;
+  --green: #1a9e6b;
+  --red: #d64541;
+  --yellow: #a87f1b;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }

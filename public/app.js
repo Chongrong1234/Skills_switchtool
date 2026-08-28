@@ -40,6 +40,17 @@ async function run(fn) {
   try { await fn(); } catch (err) { toast(err.message, 'err'); }
 }
 
+// ---------- 主题 ----------
+// 选择持久化在 localStorage;首屏恢复由 index.html head 里的内联脚本完成(避免闪烁)
+const THEME_KEY = 'ssw-theme';
+function getTheme() {
+  return localStorage.getItem(THEME_KEY) === 'light' ? 'light' : 'dark';
+}
+function setTheme(t) {
+  document.documentElement.dataset.theme = t;
+  localStorage.setItem(THEME_KEY, t);
+}
+
 // ---------- 数据加载 ----------
 async function loadAll() {
   const [agents, pdata, skills] = await Promise.all([
@@ -225,6 +236,24 @@ function agentCheckboxList(selected = []) {
         ${selected.includes(a.id) ? 'checked' : ''} ${a.detected ? '' : 'disabled'} />
       ${esc(a.displayName)}${a.detected ? '' : '(未检测到)'}
     </label>`).join('');
+}
+
+// ---------- 设置 ----------
+function openSettingsModal() {
+  const cur = getTheme();
+  const modal = openModal(`
+    <h2>设置</h2>
+    <div class="form-row"><label>界面主题</label>
+      <div class="radio-group">
+        <label><input type="radio" name="st-theme" value="dark" ${cur === 'dark' ? 'checked' : ''} /> 深色</label>
+        <label><input type="radio" name="st-theme" value="light" ${cur === 'light' ? 'checked' : ''} /> 浅色</label>
+      </div>
+    </div>
+    <div class="modal-actions"><button class="btn" id="m-close">关闭</button></div>
+  `);
+  modal.querySelector('#m-close').addEventListener('click', closeModal);
+  modal.querySelectorAll('input[name="st-theme"]').forEach((r) =>
+    r.addEventListener('change', () => setTheme(r.value)));
 }
 
 // ---------- 从库中添加技能 ----------
@@ -446,6 +475,7 @@ function openInitSkillModal() {
 document.querySelectorAll('.view-btn').forEach((b) =>
   b.addEventListener('click', () => { state.view = b.dataset.view; render(); }));
 document.getElementById('btn-new-project').addEventListener('click', openNewProjectModal);
+document.getElementById('btn-settings').addEventListener('click', openSettingsModal);
 
 run(async () => {
   await loadAll();
