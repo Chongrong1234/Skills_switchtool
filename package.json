@@ -1,0 +1,33 @@
+{
+  "name": "skills-switchtool",
+  "version": "0.1.0",
+  "description": "项目中心化的 Agent Skills 管理工具(Web GUI / Electron 桌面 App)",
+  "type": "module",
+  "main": "electron/main.mjs",
+  "bin": {
+    "ssw": "dist/cli.js"
+  },
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "app": "npm run build && electron .",
+    "dist": "npm run build && electron-builder --linux AppImage",
+    "dist:cli": "npm run build && node scripts/build-cli.mjs"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.0",
+    "electron": "^44.0.0",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.8"
+  }
+}

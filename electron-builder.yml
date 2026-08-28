@@ -1,0 +1,15 @@
+# electron-builder 配置:Linux 只产 AppImage
+appId: com.skillsswitchtool.app
+productName: Skills SwitchTool
+directories:
+  output: release
+files:
+  # 只打包编译产物 + 主进程 + 静态前端;devDeps(tsx/vitest 等)不进入产物
+  - dist/**
+  - electron/**
+  - public/**
+  - package.json
+linux:
+  target: AppImage
+  category: Utility
+  icon: build/icon.png

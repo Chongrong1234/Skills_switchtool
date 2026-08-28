@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Skills SwitchTool</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- 左侧固定侧栏 -->
+    <aside id="sidebar">
+      <div class="brand">🛠 Skills SwitchTool</div>
+      <nav class="views">
+        <button class="view-btn" data-view="projects">项目</button>
+        <button class="view-btn" data-view="skills">技能库</button>
+      </nav>
+      <div id="sidebar-projects" class="sidebar-list"></div>
+      <button id="btn-new-project" class="btn btn-primary btn-block">+ 新建项目</button>
+    </aside>
+
+    <!-- 主区 -->
+    <main id="main"></main>
+  </div>
+
+  <!-- 弹窗容器与 toast -->
+  <div id="modal-root"></div>
+  <div id="toast-root"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
