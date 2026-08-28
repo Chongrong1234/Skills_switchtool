@@ -188,10 +188,17 @@ export function createApp(): express.Express {
   }));
 
   app.post('/api/skills', h(async (req, res) => {
-    const { source, uri } = req.body ?? {};
+    const { source, uri, subdir } = req.body ?? {};
     if (!source || !uri) return void res.status(400).json({ error: 'source 与 uri 必填' });
-    if (source === 'github') return void res.status(201).json(await installFromGithub(uri));
-    if (source === 'local') return void res.status(201).json(await installFromLocal(uri));
+    // subdir 仅对 github 来源有意义:以仓库内该子目录为扫描根(合集仓库常见 skills/)
+    if (subdir !== undefined && typeof subdir !== 'string') {
+      return void res.status(400).json({ error: 'subdir 必须是字符串' });
+    }
+    if (source === 'github') return void res.status(201).json(await installFromGithub(uri, subdir));
+    if (source === 'local') {
+      if (subdir !== undefined) return void res.status(400).json({ error: 'subdir 仅支持 github 来源' });
+      return void res.status(201).json(await installFromLocal(uri));
+    }
     res.status(400).json({ error: 'source 只能是 github 或 local' });
   }));
 

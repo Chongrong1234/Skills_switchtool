@@ -1,6 +1,6 @@
 /**
- * catalog 推荐库测试:数据完整性、过滤/排序、installed 标记。
- * 推荐库数据是内置静态数据,测试不访问网络;SSW_HOME 隔离仅服务于 registry 标记。
+ * catalog 推荐库测试:数据完整性、过滤/排序、installed 标记,以及合集仓库 subdir 安装链路。
+ * 推荐库数据是内置静态数据,测试不访问网络;SSW_HOME 隔离服务于 registry 标记与登记。
  */
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -12,6 +12,7 @@ import {
   listCatalog,
   listCatalogWithInstalled,
 } from '../src/core/catalog.js';
+import { installFromGithub, LibraryError, registerSkillsIn } from '../src/core/library.js';
 import { upsertSkill } from '../src/core/registry.js';
 import type { SkillEntry } from '../src/core/types.js';
 
@@ -109,5 +110,43 @@ describe('listCatalogWithInstalled 标记', () => {
   it('过滤条件同样生效', async () => {
     const items = await listCatalogWithInstalled({ category: 'research' });
     expect(items.every((i) => i.category === 'research')).toBe(true);
+  });
+});
+
+/** 造一个假 skill 目录(SKILL.md 带合法 frontmatter) */
+async function mkSkill(dir: string, name: string): Promise<void> {
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, 'SKILL.md'), `---\nname: ${name}\ndescription: ${name} 描述\n---\n`, 'utf8');
+}
+
+describe('registerSkillsIn:合集仓库 subdir 扫描(推荐库安装链路)', () => {
+  it('不传 subdir:只扫根 + 第一层;skills/ 下的二级 skill 不登记', async () => {
+    const repo = path.join(tmp, 'repo');
+    await mkSkill(repo, 'root-skill');
+    await mkSkill(path.join(repo, 'other'), 'other-skill');
+    await mkSkill(path.join(repo, 'skills', 'alpha'), 'alpha');
+    const got = await registerSkillsIn(repo, 'o/r', 'https://github.com/o/r');
+    expect(got.map((s) => s.id).sort()).toEqual(['o/r:', 'o/r:other']);
+  });
+
+  it('传 subdir=skills:以该子目录为扫描根,id 带 skills/ 前缀', async () => {
+    const repo = path.join(tmp, 'repo');
+    await mkSkill(repo, 'root-skill');
+    await mkSkill(path.join(repo, 'skills', 'alpha'), 'alpha');
+    await mkSkill(path.join(repo, 'skills', 'beta'), 'beta');
+    await fs.mkdir(path.join(repo, 'skills', 'not-a-skill'), { recursive: true }); // 无 SKILL.md,跳过
+    const got = await registerSkillsIn(repo, 'o/r', 'https://github.com/o/r', 'skills');
+    expect(got.map((s) => s.id).sort()).toEqual(['o/r:skills/alpha', 'o/r:skills/beta']);
+  });
+
+  it('subdir 不存在时抛 LibraryError', async () => {
+    const repo = path.join(tmp, 'repo');
+    await mkSkill(repo, 'root-skill');
+    await expect(registerSkillsIn(repo, 'o/r', 'u', 'missing')).rejects.toThrow(LibraryError);
+  });
+
+  it('installFromGithub 对非法 subdir 在 clone 前就拒绝(无网络也安全)', async () => {
+    await expect(installFromGithub('owner/repo', '../etc')).rejects.toThrow('非法子目录');
+    await expect(installFromGithub('owner/repo', 'a//b')).rejects.toThrow('非法子目录');
   });
 });

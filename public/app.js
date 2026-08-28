@@ -597,7 +597,9 @@ function bindCatalogInstalls(main) {
       btn.disabled = true;
       btn.textContent = '安装中…';
       try {
-        const installed = await api('POST', '/api/skills', { source: 'github', uri: item ? item.url : repo });
+        const body = { source: 'github', uri: item ? item.url : repo };
+        if (item && item.subdir) body.subdir = item.subdir; // 合集仓库:以 skills/ 子目录为扫描根
+        const installed = await api('POST', '/api/skills', body);
         await loadAll();
         state.catalog = null; // installed 标记已变化,触发重拉
         toast(`已安装 ${installed.length} 个 skill`);

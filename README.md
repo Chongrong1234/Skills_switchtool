@@ -55,6 +55,7 @@ GUI 里更简单:左侧栏点一下项目名,搞定。✅
 | 🔗 **symlink 物化** | 默认软链写入 `.claude/skills` 等项目级目录,库更新即时生效;失败自动降级 copy 并告警 |
 | 📸 **快照可回滚** | 每次 apply 自动快照(每项目留 5 份),配错了也能一键穿越回去 |
 | 🔍 **智能推荐** | 识别项目技术栈,推荐 GitHub 高 star skills 充实配方;断网/限流安静降级,绝不甩脸子 |
+| 🏪 **内置推荐库** | 精选 27 个高 star skills 仓库,覆盖软件开发/科研/设计/营销/DevOps 等 8 大类,离线可浏览,一键整仓安装 |
 | 🖥️ **两种打开方式** | Electron 桌面 App 点点点、服务器纯 CLI/终端面板——同一份核心,同一份状态 |
 | 🪶 **极致轻量** | 运行时仅 2 个依赖(express + commander);CLI 可打成零依赖单文件,拷到服务器即用 |
 
@@ -142,13 +143,15 @@ ssw project rollback [id|name]
 ssw project remove <id|name>            # 只删档案,不动磁盘文件
 ssw project bind <id|name> <skillId...> # 设置项目技能集(整体替换)
 ssw skill list
-ssw skill add --github <owner/repo 或 URL>
+ssw skill add --github <owner/repo 或 URL> [--subdir skills]   # 合集仓库用 --subdir 指定扫描根
 ssw skill add --local /path/to/skill
 ssw skill init --name X --desc "..."    # 自建 skill 脚手架
 ssw skill remove <id>                    # 卸载并解除各项目绑定;github 根级条目卸载会连带同仓条目
 ssw skill update [id]                   # 省略 id 更新全部 github 来源
 ssw skill export                        # 导出迁移码(ssw1:owner/repo,...;仅 github 来源)
 ssw skill import <code>                 # 粘贴迁移码批量安装;已有仓库跳过,部分失败时退出码非零
+ssw catalog [--category dev] [--q 关键词]   # 内置推荐库:精选高 star 仓库,含已安装标记
+ssw catalog install <owner/repo>        # 一键安装推荐库条目(自动带上合集子目录)
 ssw recommend --path /abs/path [--keywords a,b,c]
 ```
 
@@ -198,6 +201,8 @@ src/
     apply.ts      # apply/unapply:技能集物化到各 agent 项目级目录;symlink 默认、copy 可选、冲突移入快照
     snapshot.ts   # apply 前快照,rollback 还原;每项目保留最近 5 份
     recommend.ts  # 技术栈检测 + GitHub Search API 按 star 排序;24h 缓存;断网/限流降级不抛异常
+    catalog.ts    # 内置精选推荐库(27 个高 star 仓库 / 8 大类,离线可用);installed 标记;subdir 适配合集仓库
+    migrate.ts    # 迁移码导出/导入(github 来源仓库简写集合)
   adapters/
     types.ts      # AgentAdapter 接口(PLAN.md 4.4)
     claude-code.ts kimi-code.ts cursor.ts codex.ts

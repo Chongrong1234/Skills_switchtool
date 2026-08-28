@@ -265,12 +265,14 @@ leaf(
     .command('add')
     .description('安装 skill(--github 与 --local 二选一)')
     .option('--github <uri>', 'GitHub 仓库(owner/repo 或完整 URL)')
-    .option('--local <path>', '本地 skill 目录(需含合法 SKILL.md)'),
+    .option('--local <path>', '本地 skill 目录(需含合法 SKILL.md)')
+    .option('--subdir <dir>', 'GitHub 仓库内子目录为扫描根(合集仓库常见 skills/,仅配合 --github)'),
 ).action(
-  wrap(async (cmd, opts: { github?: string; local?: string }) => {
+  wrap(async (cmd, opts: { github?: string; local?: string; subdir?: string }) => {
     if (!!opts.github === !!opts.local) throw new Error('必须且只能指定 --github 或 --local 之一');
+    if (opts.local && opts.subdir) throw new Error('--subdir 仅支持 --github 来源');
     if (opts.github) {
-      const installed = await installFromGithub(opts.github);
+      const installed = await installFromGithub(opts.github, opts.subdir);
       out(cmd, installed, () => `已从 GitHub 安装 ${installed.length} 个 skill:\n` + installed.map((s) => `  ${s.id}  ${s.name}`).join('\n'));
     } else {
       const entry = await installFromLocal(opts.local!);
@@ -417,10 +419,11 @@ leaf(
     .argument('<repo>', '推荐库条目 id(owner/repo)'),
 ).action(
   wrap(async (cmd, repo: string) => {
-    const inCatalog = CATALOG.some((e) => e.id.toLowerCase() === repo.toLowerCase());
-    const installed = await installFromGithub(repo);
-    out(cmd, { inCatalog, installed }, () =>
-      (inCatalog ? '' : `提示: ${repo} 不在推荐库中,已按普通 GitHub 仓库处理\n`) +
+    const hit = CATALOG.find((e) => e.id.toLowerCase() === repo.toLowerCase());
+    // 命中目录则用条目的规范 URL 与 subdir(合集仓库的 skills 子目录)安装
+    const installed = await installFromGithub(hit ? hit.url : repo, hit?.subdir);
+    out(cmd, { inCatalog: !!hit, installed }, () =>
+      (hit ? '' : `提示: ${repo} 不在推荐库中,已按普通 GitHub 仓库处理\n`) +
       `已安装 ${installed.length} 个 skill:\n` +
       installed.map((s) => `  ${s.id}  ${s.name}`).join('\n'),
     );

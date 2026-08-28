@@ -49,7 +49,8 @@ src/
     paths.ts             # SSW_HOME 路径常量;每次调用重读环境变量(测试隔离的关键)
     types.ts             # SkillEntry / Project / ProjectsData / ApplyMode
     registry.ts          # registry.json 读写;atomicWriteJson(tmp+rename 原子写)、readJsonSafe(损坏容错)
-    library.ts           # 中央库:github→git clone --depth 1、local→复制、卸载、更新、initSkill 脚手架;
+    library.ts           # 中央库:github→git clone --depth 1(可选 subdir 子目录为扫描根,registerSkillsIn 可单测)、
+                         #   local→复制、卸载、更新、initSkill 脚手架;
                          #   validateSkillDir 校验 SKILL.md frontmatter(name/description 必填);LibraryError
     projects.ts          # 项目档案 CRUD + activeProjectId;id 用 crypto.randomUUID()
     apply.ts             # applyProject / unapplyProject:物化到各 agent 目录;幂等(已是指向库的 symlink 则跳过)
@@ -58,6 +59,8 @@ src/
                          #   24h 缓存(cache/);断网/限流降级返回 { items: [], message },绝不抛异常
     migrate.ts           # 迁移码:ssw1:owner/repo,... 仅含 github 来源,按仓库去重;
                          #   importSkillsCode 幂等跳过已有、单仓失败不中断;installFn 可注入(测试)
+    catalog.ts           # 内置精选推荐库:27 个高 star 仓库 / 8 大类(开发/科研/写作/营销/设计/数据/DevOps/效率);
+                         #   静态数据离线可用,stars 为收录时快照;条目 subdir 适配合集仓库(skills/ 子目录扫描根)
   adapters/
     types.ts             # AgentAdapter 接口(id/displayName/detect/projectSkillsDir/capabilities/validate?)
     factory.ts           # makeAdapter(spec):detect 依据 ~/<homeDir> 是否存在,skills 目录 = <项目根>/<skillsSubDir>
@@ -97,7 +100,7 @@ electron-builder.yml     # 打包配置:Linux AppImage + Windows NSIS + macOS dm
 - 测试文件在 `tests/*.test.ts`,每个 core 模块一个对应文件;`cli.test.ts` 是端到端测试,用 `child_process` 跑**编译产物** `dist/cli.js`(`beforeAll` 里先自动跑 `npm run build`)。
 - **隔离约定(必须遵守)**:测试在 `beforeEach` 里把 `process.env.SSW_HOME` 指向 `fs.mkdtemp` 临时目录,`afterEach` 里删除该环境变量并 `rm` 临时目录——绝不触碰真实 `~/.skills-switch`。涉及真实文件系统的测试保持串行(这也是 `pool: 'forks'` 的原因)。
 - 网络相关测试注入假 `fetch`(`recommendForProject(path, name, fetchImpl)` 的第三参),不打真实 GitHub API。
-- 提交改动前跑 `npm test`,当前基线:11 个文件 86 个用例全绿。
+- 提交改动前跑 `npm test`,当前基线:11 个文件 90 个用例全绿。
 
 ## 安全注意事项
 

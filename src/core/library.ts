@@ -101,24 +101,40 @@ function normalizeGithubUri(uri: string): { owner: string; repo: string; cloneUr
   return { owner, repo, cloneUrl: `https://github.com/${owner}/${repo}.git` };
 }
 
-/** 从 GitHub 安装:浅克隆后,根或第一层子目录中含 SKILL.md 的都登记入库 */
-export async function installFromGithub(uri: string): Promise<SkillEntry[]> {
-  const { owner, repo, cloneUrl } = normalizeGithubUri(uri);
-  const dest = path.join(libraryDir(), `github__${owner}__${repo}`);
-  await fs.rm(dest, { recursive: true, force: true });
-  await fs.mkdir(libraryDir(), { recursive: true });
-  try {
-    await runGit(['clone', '--depth', '1', cloneUrl, dest]);
-  } catch (err) {
-    if (err instanceof LibraryError) throw err;
-    throw new LibraryError(`git clone 失败: ${err instanceof Error ? err.message : String(err)}`);
+/**
+ * 规范化子目录参数:去掉首尾斜杠;拒绝空段、"."、".." 等越界成分。
+ * 合法返回规范化后的相对路径;未传返回 undefined;非法抛 LibraryError。
+ */
+function normalizeSubdir(subdir?: string): string | undefined {
+  if (subdir === undefined) return undefined;
+  const s = subdir.trim().replace(/^\/+|\/+$/g, '');
+  if (!s || s.split('/').some((p) => !p || p === '.' || p === '..')) {
+    throw new LibraryError(`非法子目录: ${subdir}`);
   }
+  return s;
+}
 
-  // 收集候选目录:仓库根 + 第一层子目录
-  const candidates: { subPath: string; dir: string }[] = [{ subPath: '', dir: dest }];
-  for (const ent of await fs.readdir(dest, { withFileTypes: true })) {
+/**
+ * 扫描 repoDir(或其中 subdir 子目录)的自身 + 第一层子目录,把合法 skill 登记入库。
+ * subPath 是相对仓库根的路径,写进 SkillEntry.id 的 "owner/repo:<subPath>"。
+ * 独立导出便于测试(installFromGithub 的 git clone 要网络,这部分不需要)。
+ */
+export async function registerSkillsIn(
+  repoDir: string,
+  repoId: string, // "owner/repo"
+  uri: string,
+  subdir?: string,
+): Promise<SkillEntry[]> {
+  const scanRoot = subdir ? path.join(repoDir, subdir) : repoDir;
+  const stat = await fs.stat(scanRoot).catch(() => null);
+  if (!stat?.isDirectory()) {
+    throw new LibraryError(`仓库中不存在子目录: ${subdir}`);
+  }
+  // 收集候选目录:扫描根自身 + 第一层子目录
+  const candidates: { subPath: string; dir: string }[] = [{ subPath: subdir ?? '', dir: scanRoot }];
+  for (const ent of await fs.readdir(scanRoot, { withFileTypes: true })) {
     if (ent.isDirectory() && !ent.name.startsWith('.') && ent.name !== 'node_modules') {
-      candidates.push({ subPath: ent.name, dir: path.join(dest, ent.name) });
+      candidates.push({ subPath: subdir ? `${subdir}/${ent.name}` : ent.name, dir: path.join(scanRoot, ent.name) });
     }
   }
 
@@ -127,7 +143,7 @@ export async function installFromGithub(uri: string): Promise<SkillEntry[]> {
     try {
       const { name, description } = await validateSkillDir(c.dir);
       const entry: SkillEntry = {
-        id: `${owner}/${repo}:${c.subPath}`,
+        id: `${repoId}:${c.subPath}`,
         name,
         description,
         source: { type: 'github', uri },
@@ -140,9 +156,30 @@ export async function installFromGithub(uri: string): Promise<SkillEntry[]> {
       // 该目录不是合法 skill,跳过
     }
   }
+  return installed;
+}
+
+/**
+ * 从 GitHub 安装:浅克隆后,根或第一层子目录中含 SKILL.md 的都登记入库。
+ * subdir 可选:指定后以 <仓库>/<subdir> 为扫描根(主流合集仓库把 skills 放在 skills/ 子目录)。
+ */
+export async function installFromGithub(uri: string, subdir?: string): Promise<SkillEntry[]> {
+  const { owner, repo, cloneUrl } = normalizeGithubUri(uri);
+  const sub = normalizeSubdir(subdir);
+  const dest = path.join(libraryDir(), `github__${owner}__${repo}`);
+  await fs.rm(dest, { recursive: true, force: true });
+  await fs.mkdir(libraryDir(), { recursive: true });
+  try {
+    await runGit(['clone', '--depth', '1', cloneUrl, dest]);
+  } catch (err) {
+    if (err instanceof LibraryError) throw err;
+    throw new LibraryError(`git clone 失败: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  const installed = await registerSkillsIn(dest, `${owner}/${repo}`, uri, sub);
   if (installed.length === 0) {
     await fs.rm(dest, { recursive: true, force: true });
-    throw new LibraryError(`仓库中未找到合法 skill(无 SKILL.md): ${uri}`);
+    throw new LibraryError(`仓库中未找到合法 skill(无 SKILL.md): ${uri}${sub ? `(子目录 ${sub})` : ''}`);
   }
   return installed;
 }
