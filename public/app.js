@@ -2,12 +2,13 @@
 
 // ---------- 全局状态 ----------
 const state = {
-  view: 'projects',        // 'projects' | 'skills' | 'mcps' | 'catalog'
+  view: 'projects',        // 'projects' | 'skills' | 'mcps' | 'catalog' | 'global'
   agents: [],              // [{id, displayName, detected, capabilities}]
   projects: [],
   activeProjectId: null,
   skills: [],
   mcps: [],                // MCP server 中央注册表
+  global: null,            // 全局(用户级)共享档案 {skills, agents, applyMode, lastAppliedAt}
   selectedProjectId: null, // 主区当前展示的项目
   catalog: null,           // 推荐库缓存 {categories, items},null = 未加载/已失效
   catalogCategory: '',     // 推荐库当前分类过滤('' = 全部)
@@ -47,6 +48,49 @@ function toast(msg, type = 'ok') {
   setTimeout(() => el.remove(), 3200);
 }
 
+// ---------- git 进度条(安装/导入等长任务:轮询 /api/progress 渲染 clone/pull 进度) ----------
+const progressUI = {
+  inflight: 0, // 进行中的长任务数;归 0 才停止轮询并隐藏面板
+  timer: null,
+  start() {
+    this.inflight++;
+    if (this.timer) return;
+    const tick = async () => {
+      try {
+        const { jobs } = await api('GET', '/api/progress');
+        this.render(jobs);
+      } catch { /* 轮询失败不影响主流程 */ }
+    };
+    tick();
+    this.timer = setInterval(tick, 400);
+  },
+  stop() {
+    this.inflight = Math.max(0, this.inflight - 1);
+    if (this.inflight) return;
+    clearInterval(this.timer);
+    this.timer = null;
+    this.render([]);
+  },
+  render(jobs) {
+    const root = document.getElementById('progress-root');
+    if (!jobs.length) { root.style.display = 'none'; root.innerHTML = ''; return; }
+    root.style.display = 'flex';
+    root.innerHTML = jobs.map((j) => `
+      <div class="prog">
+        <div class="prog-label">${esc(j.label)}</div>
+        ${j.pct === null ? '' : `<div class="prog-bar"><div class="prog-fill" style="width:${j.pct}%"></div></div>`}
+        <div class="prog-text">${esc(j.phase ? `${j.phase} ${j.pct}%` : '')} ${esc(j.text)}</div>
+      </div>`).join('');
+  },
+};
+
+/** 带进度条的 api:clone/pull 类长任务(github 安装、迁移码/配置库导入)用,期间轮询渲染 git 进度 */
+async function apiWithProgress(method, url, body) {
+  progressUI.start();
+  try { return await api(method, url, body); }
+  finally { progressUI.stop(); }
+}
+
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -69,17 +113,19 @@ function setTheme(t) {
 
 // ---------- 数据加载 ----------
 async function loadAll() {
-  const [agents, pdata, skills, mcps] = await Promise.all([
+  const [agents, pdata, skills, mcps, gprofile] = await Promise.all([
     api('GET', '/api/agents'),
     api('GET', '/api/projects'),
     api('GET', '/api/skills'),
     api('GET', '/api/mcps'),
+    api('GET', '/api/global'),
   ]);
   state.agents = agents;
   state.projects = pdata.projects;
   state.activeProjectId = pdata.activeProjectId;
   state.skills = skills;
   state.mcps = mcps;
+  state.global = gprofile;
   if (!state.selectedProjectId && state.projects.length) {
     state.selectedProjectId = state.activeProjectId || state.projects[0].id;
   }
@@ -95,6 +141,7 @@ function render() {
   if (state.view === 'projects') renderProjectDetail();
   else if (state.view === 'catalog') renderCatalog();
   else if (state.view === 'mcps') renderMcpLibrary();
+  else if (state.view === 'global') renderGlobal();
   else renderSkillLibrary();
 }
 
@@ -441,7 +488,7 @@ function openNewProjectModal() {
         btn.disabled = true;
         btn.textContent = '安装中…';
         try {
-          const installed = await api('POST', '/api/skills', { source: 'github', uri: btn.dataset.recUrl });
+          const installed = await apiWithProgress('POST', '/api/skills', { source: 'github', uri: btn.dataset.recUrl });
           const latest = (await api('GET', `/api/projects/${project.id}`));
           await api('POST', `/api/projects/${project.id}/skills`, {
             skillIds: [...latest.skills, ...installed.map((s) => s.id)],
@@ -469,8 +516,11 @@ function renderSkillLibrary() {
       <button class="btn btn-primary" id="sk-github">从 GitHub 安装</button>
       <button class="btn" id="sk-local">从本地路径安装</button>
       <button class="btn" id="sk-init">新建我的 Skill</button>
+      <button class="btn" id="sk-adopt">收养 agent 技能</button>
       <button class="btn" id="sk-export">导出迁移码</button>
       <button class="btn" id="sk-import">导入迁移码</button>
+      <button class="btn" id="sk-profile-export">导出配置库</button>
+      <button class="btn" id="sk-profile-import">导入配置库</button>
     </div>
     <div class="skills-grid">
       ${state.skills.map((s) => `
@@ -488,8 +538,11 @@ function renderSkillLibrary() {
   document.getElementById('sk-github').addEventListener('click', openInstallGithubModal);
   document.getElementById('sk-local').addEventListener('click', openInstallLocalModal);
   document.getElementById('sk-init').addEventListener('click', openInitSkillModal);
+  document.getElementById('sk-adopt').addEventListener('click', openAdoptModal);
   document.getElementById('sk-export').addEventListener('click', openExportModal);
   document.getElementById('sk-import').addEventListener('click', openImportModal);
+  document.getElementById('sk-profile-export').addEventListener('click', exportProfileFile);
+  document.getElementById('sk-profile-import').addEventListener('click', openProfileImportModal);
   main.querySelectorAll('[data-del-skill]').forEach((btn) =>
     btn.addEventListener('click', () => run(async () => {
       if (!confirm(`确定从库中删除「${btn.dataset.delSkill}」?`)) return;
@@ -517,7 +570,7 @@ function openInstallGithubModal() {
     const btn = modal.querySelector('#m-ok');
     btn.disabled = true; btn.textContent = '安装中…';
     try {
-      const installed = await api('POST', '/api/skills', { source: 'github', uri });
+      const installed = await apiWithProgress('POST', '/api/skills', { source: 'github', uri });
       await loadAll();
       closeModal();
       render();
@@ -630,7 +683,7 @@ function openImportModal() {
     btn.disabled = true; btn.textContent = '导入中…';
     let r;
     try {
-      r = await api('POST', '/api/skills/import', { code });
+      r = await apiWithProgress('POST', '/api/skills/import', { code });
     } catch (err) {
       // 失败恢复按钮可重试;错误继续抛给 run() 弹 toast
       btn.disabled = false; btn.textContent = '导入';
@@ -772,23 +825,31 @@ function catalogCardsHtml() {
   const items = catalogFiltered();
   if (!items.length) return '<div class="empty">没有匹配的条目</div>';
   const catName = (id) => (state.catalog.categories.find((c) => c.id === id) || {}).name || id;
-  return items.map((e) => `
+  return items.map((e) => {
+    const isMcp = e.kind === 'mcp';
+    // 动作文案:skill 是 git clone("安装");MCP 是写中央注册表("添加");stars 0(托管 MCP)不显示 ★
+    const btnText = isMcp
+      ? (e.installed ? '已添加' : '添加')
+      : (e.installed ? `已安装(${e.installedCount})` : '安装');
+    return `
     <div class="skill-card">
       <div class="chead">
         <span class="sname">${esc(e.name)}</span>
-        <span class="rstars">★ ${e.stars}</span>
+        ${e.stars ? `<span class="rstars">★ ${e.stars}</span>` : ''}
       </div>
       <div class="sdesc">${esc(e.description)}</div>
+      ${isMcp ? `<div class="sdesc">${esc(e.mcp.transport === 'stdio' ? `${e.mcp.command} ${(e.mcp.args || []).join(' ')}` : e.mcp.url)}</div>` : ''}
       <div class="smeta">
         <span class="tag">${esc(catName(e.category))}</span>
+        <span class="tag">${isMcp ? `MCP · ${esc(e.mcp.transport)}` : 'skills'}</span>
         <span class="tag">${esc(e.id)}</span>
       </div>
       <div class="cbtns">
-        <button class="btn btn-sm btn-primary" data-cat-install="${esc(e.id)}" ${e.installed ? 'disabled' : ''}>
-          ${e.installed ? `已安装(${e.installedCount})` : '安装'}</button>
-        <a class="btn btn-sm" href="${esc(e.url)}" target="_blank" rel="noopener">仓库 ↗</a>
+        <button class="btn btn-sm btn-primary" data-cat-install="${esc(e.id)}" ${e.installed ? 'disabled' : ''}>${btnText}</button>
+        <a class="btn btn-sm" href="${esc(e.url)}" target="_blank" rel="noopener">${isMcp ? '文档' : '仓库'} ↗</a>
       </div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 }
 
 /** 只刷新卡片区(搜索/切分类时不动输入框,避免丢失焦点) */
@@ -800,22 +861,31 @@ function refreshCatalogCards(main) {
 function bindCatalogInstalls(main) {
   main.querySelectorAll('[data-cat-install]').forEach((btn) =>
     btn.addEventListener('click', async () => {
-      const repo = btn.dataset.catInstall;
-      const item = state.catalog.items.find((i) => i.id === repo);
+      const item = state.catalog.items.find((i) => i.id === btn.dataset.catInstall);
+      const isMcp = item && item.kind === 'mcp';
       btn.disabled = true;
-      btn.textContent = '安装中…';
+      btn.textContent = isMcp ? '添加中…' : '安装中…';
       try {
-        const body = { source: 'github', uri: item ? item.url : repo };
-        if (item && item.subdir) body.subdir = item.subdir; // 合集仓库:以 skills/ 子目录为扫描根
-        const installed = await api('POST', '/api/skills', body);
-        await loadAll();
-        state.catalog = null; // installed 标记已变化,触发重拉
-        toast(`已安装 ${installed.length} 个 skill`);
-        render();
+        if (isMcp) {
+          // MCP 条目:写入中央注册表(密钥占位符后续在 MCP 服务页替换)
+          await api('POST', '/api/mcps', { name: item.id, description: item.description, ...item.mcp });
+          await loadAll();
+          state.catalog = null;
+          toast(`已添加 MCP server: ${item.id}(如有密钥占位符请到「MCP 服务」页替换)`);
+          render();
+        } else {
+          const body = { source: 'github', uri: item ? item.url : btn.dataset.catInstall };
+          if (item && item.subdir) body.subdir = item.subdir; // 合集仓库:以 skills/ 子目录为扫描根
+          const installed = await apiWithProgress('POST', '/api/skills', body);
+          await loadAll();
+          state.catalog = null; // installed 标记已变化,触发重拉
+          toast(`已安装 ${installed.length} 个 skill`);
+          render();
+        }
       } catch (err) {
         toast(err.message, 'err');
         btn.disabled = false;
-        btn.textContent = '安装';
+        btn.textContent = isMcp ? '添加' : '安装';
       }
     }));
 }
@@ -829,7 +899,7 @@ function renderCatalog() {
   }
   main.innerHTML = `
     <div class="main-title">推荐库</div>
-    <div class="main-sub">精选高 star 的 skills 仓库,一键安装到中央库(整仓安装:仓库内所有 skill 会全部登记)</div>
+    <div class="main-sub">精选高 star 的 skills 仓库与常用 MCP 服务:skill 一键安装到中央库(整仓登记);MCP 一键加入中央注册表,绑定项目后 apply 写入各 agent 配置</div>
     <div class="cat-toolbar">
       <input type="text" id="cat-q" placeholder="搜索名称 / 描述 / 仓库…" value="${esc(state.catalogQuery)}" />
     </div>
@@ -851,6 +921,253 @@ function renderCatalog() {
       refreshCatalogCards(main);
     }));
   bindCatalogInstalls(main);
+}
+
+// ---------- 全局共享视图(用户级:物化到 ~/.<agent>/skills,所有项目共享) ----------
+function renderGlobal() {
+  const main = document.getElementById('main');
+  const g = state.global || { skills: [], agents: [], applyMode: 'symlink' };
+  const globalSkills = state.skills.filter((s) => g.skills.includes(s.id));
+
+  main.innerHTML = `
+    <div class="main-title">全局共享</div>
+    <div class="main-sub">物化到各 agent 的用户级 skills 目录(~/.claude/skills、~/.agents/skills 等),一次配置,该 agent 的所有项目共享</div>
+
+    <div class="section">
+      <h3>目标 Agents(未检测到的不可选)</h3>
+      <div class="agent-checks">
+        ${state.agents.map((a) => `
+          <label class="agent-check ${a.detected ? '' : 'disabled'}">
+            <input type="checkbox" data-agent-id="${a.id}"
+              ${g.agents.includes(a.id) ? 'checked' : ''} ${a.detected ? '' : 'disabled'} />
+            ${esc(a.displayName)}${a.detected ? '' : '(未检测到)'}
+          </label>`).join('')}
+      </div>
+    </div>
+
+    <div class="section">
+      <h3>共享技能集(${globalSkills.length})</h3>
+      <div class="panel">
+        ${globalSkills.length ? globalSkills.map((s) => `
+          <div class="skill-row">
+            <div>
+              <div class="sname">${esc(s.name)}</div>
+              <div class="sdesc">${esc(s.description)}</div>
+            </div>
+            <button class="btn btn-sm btn-danger" data-remove-skill="${esc(s.id)}">移除</button>
+          </div>`).join('') : '<div class="empty">尚未绑定技能,点击下方按钮从库中添加</div>'}
+      </div>
+      <div class="toolbar">
+        <button class="btn" id="btn-add-skill">+ 从库中添加</button>
+      </div>
+    </div>
+
+    <div class="section">
+      <h3>应用模式</h3>
+      <div class="radio-group">
+        <label><input type="radio" name="g-mode" value="symlink" ${g.applyMode === 'symlink' ? 'checked' : ''} /> symlink(推荐,改动即时生效)</label>
+        <label><input type="radio" name="g-mode" value="copy" ${g.applyMode === 'copy' ? 'checked' : ''} /> copy</label>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button class="btn btn-primary" id="g-apply">应用全局共享</button>
+      <button class="btn" id="g-unapply">取消应用</button>
+      <button class="btn" id="g-rollback">回滚</button>
+      <span class="main-sub" style="align-self:center">上次 apply: ${esc(g.lastAppliedAt ? g.lastAppliedAt.replace('T', ' ').slice(0, 19) : '(从未)')}</span>
+    </div>
+  `;
+
+  main.querySelectorAll('input[data-agent-id]').forEach((cb) =>
+    cb.addEventListener('change', () => run(async () => {
+      const agents = [...main.querySelectorAll('input[data-agent-id]:checked')].map((x) => x.dataset.agentId);
+      await api('PUT', '/api/global', { agents });
+      await loadAll();
+      render();
+      toast('目标 agents 已更新');
+    })));
+
+  main.querySelectorAll('input[name="g-mode"]').forEach((r) =>
+    r.addEventListener('change', () => run(async () => {
+      await api('PUT', '/api/global', { applyMode: r.value });
+      await loadAll();
+      toast('应用模式已更新');
+    })));
+
+  main.querySelectorAll('[data-remove-skill]').forEach((btn) =>
+    btn.addEventListener('click', () => run(async () => {
+      const sid = btn.dataset.removeSkill;
+      await api('PUT', '/api/global', { skills: g.skills.filter((x) => x !== sid) });
+      await loadAll();
+      render();
+      toast('已移除');
+    })));
+
+  document.getElementById('btn-add-skill').addEventListener('click', openAddGlobalSkillModal);
+  document.getElementById('g-apply').addEventListener('click', () => run(async () => {
+    const r = await api('POST', '/api/global/apply');
+    await loadAll();
+    render();
+    toast(`已全局应用 ${r.applied.length} 项${r.warnings.length ? `,${r.warnings.length} 条警告` : ''}`);
+    r.warnings.forEach((w) => toast(w, 'err'));
+  }));
+  document.getElementById('g-unapply').addEventListener('click', () => run(async () => {
+    const r = await api('POST', '/api/global/unapply');
+    toast(`已移除 ${r.removed.length} 项(全局共享)`);
+  }));
+  document.getElementById('g-rollback').addEventListener('click', () => run(async () => {
+    const r = await api('POST', '/api/global/rollback');
+    toast(r.detail, r.restored ? 'ok' : 'err');
+  }));
+}
+
+/** 从库中添加技能到全局共享集 */
+function openAddGlobalSkillModal() {
+  const g = state.global || { skills: [] };
+  const available = state.skills.filter((s) => !g.skills.includes(s.id));
+  const modal = openModal(`
+    <h2>从库中添加技能 → 全局共享</h2>
+    ${available.length ? `<div class="rec-list">
+      ${available.map((s) => `
+        <div class="rec-item">
+          <div class="rhead">
+            <span class="rname">${esc(s.name)}</span>
+            <button class="btn btn-sm btn-primary" data-add="${esc(s.id)}">添加</button>
+          </div>
+          <div class="rdesc">${esc(s.description)}</div>
+        </div>`).join('')}
+    </div>` : '<div class="empty">库中没有更多可添加的技能</div>'}
+    <div class="modal-actions"><button class="btn" id="m-close">关闭</button></div>
+  `);
+  modal.querySelector('#m-close').addEventListener('click', closeModal);
+  modal.querySelectorAll('[data-add]').forEach((btn) =>
+    btn.addEventListener('click', () => run(async () => {
+      await api('PUT', '/api/global', { skills: [...g.skills, btn.dataset.add] });
+      await loadAll();
+      closeModal();
+      render();
+      toast('已添加到全局技能集');
+    })));
+}
+
+// ---------- 收养 agent 技能(逆向于 apply:agent 目录 → 中央库) ----------
+function openAdoptModal() {
+  const modal = openModal(`
+    <h2>收养 agent 技能</h2>
+    <div class="form-row"><label>从哪个 agent 的 skills 目录收养</label>
+      <select id="ad-agent">
+        ${state.agents.map((a) => `<option value="${a.id}">${esc(a.displayName)}(${a.id})${a.detected ? '' : ' — 未检测到'}</option>`).join('')}
+      </select>
+    </div>
+    <div class="form-row"><label>作用域</label>
+      <div class="radio-group">
+        <label><input type="radio" name="ad-scope" value="project" checked /> 项目级(随项目目录)</label>
+        <label><input type="radio" name="ad-scope" value="user" /> 用户级(~/.&lt;agent&gt;/skills)</label>
+      </div>
+    </div>
+    <div class="form-row" id="ad-path-row"><label>项目根目录(留空取服务启动目录)</label>
+      <input type="text" id="ad-path" placeholder="/home/me/my-app" /></div>
+    <div id="ad-result"></div>
+    <div class="modal-actions">
+      <button class="btn" id="m-cancel">关闭</button>
+      <button class="btn btn-primary" id="m-ok">收养</button>
+    </div>
+  `);
+  modal.querySelectorAll('input[name="ad-scope"]').forEach((r) =>
+    r.addEventListener('change', () => {
+      modal.querySelector('#ad-path-row').style.display =
+        modal.querySelector('input[name="ad-scope"]:checked').value === 'project' ? '' : 'none';
+    }));
+  modal.querySelector('#m-cancel').addEventListener('click', closeModal);
+  modal.querySelector('#m-ok').addEventListener('click', () => run(async () => {
+    const agent = modal.querySelector('#ad-agent').value;
+    const scope = modal.querySelector('input[name="ad-scope"]:checked').value;
+    const projectPath = modal.querySelector('#ad-path').value.trim();
+    const btn = modal.querySelector('#m-ok');
+    btn.disabled = true; btn.textContent = '收养中…';
+    let r;
+    try {
+      r = await api('POST', '/api/skills/adopt', { agent, scope, ...(projectPath ? { projectPath } : {}) });
+    } catch (err) {
+      btn.disabled = false; btn.textContent = '收养';
+      throw err;
+    }
+    await loadAll();
+    render(); // 主区卡片刷新;弹窗保持打开展示明细
+    const lines = [
+      ...r.adopted.map((s) => `✓ ${s.id}  已收养`),
+      ...r.skipped.map((n) => `- ${n}  已在库中,跳过`),
+      ...r.invalid.map((i) => `✗ ${i.dir}  ${i.reason}`),
+    ];
+    modal.querySelector('#ad-result').innerHTML = lines.length
+      ? `<div class="rec-list">${lines.map((l) => `<div class="rec-item"><div class="rdesc">${esc(l)}</div></div>`).join('')}</div>`
+      : '<div class="empty">该目录下没有可收养的 skill</div>';
+    btn.disabled = false; btn.textContent = '收养';
+    toast(`收养完成:新收 ${r.adopted.length},跳过 ${r.skipped.length},非法 ${r.invalid.length}`, r.invalid.length ? 'err' : 'ok');
+  }));
+}
+
+// ---------- 配置库 profile 导出/导入(完整配置跨机器/跨平台共享) ----------
+function exportProfileFile() {
+  run(async () => {
+    const { bundle, warnings } = await api('GET', '/api/profile/export');
+    // 浏览器侧直接落盘为下载文件,不经服务端文件系统
+    const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'ssw-profile.json';
+    a.click();
+    URL.revokeObjectURL(a.href);
+    toast(`已导出配置库(skills ${bundle.skills.length}、MCP ${(bundle.mcps || []).length}、项目 ${(bundle.projects?.projects || []).length})`);
+    (warnings || []).forEach((w) => toast(w, 'err'));
+  });
+}
+
+function openProfileImportModal() {
+  const modal = openModal(`
+    <h2>导入配置库</h2>
+    <div class="form-row"><label>选择 profile JSON 文件(含 skills/MCP/项目档案/全局共享;已在库中的会跳过)</label>
+      <input type="file" id="pf-file" accept="application/json,.json" /></div>
+    <div id="pf-result"></div>
+    <div class="modal-actions">
+      <button class="btn" id="m-cancel">关闭</button>
+      <button class="btn btn-primary" id="m-ok">导入</button>
+    </div>
+  `);
+  modal.querySelector('#m-cancel').addEventListener('click', closeModal);
+  modal.querySelector('#m-ok').addEventListener('click', () => run(async () => {
+    const file = modal.querySelector('#pf-file').files[0];
+    if (!file) return toast('请选择 profile JSON 文件', 'err');
+    let bundle;
+    try {
+      bundle = JSON.parse(await file.text());
+    } catch {
+      return toast('文件不是合法 JSON', 'err');
+    }
+    const btn = modal.querySelector('#m-ok');
+    btn.disabled = true; btn.textContent = '导入中…';
+    let r;
+    try {
+      r = await apiWithProgress('POST', '/api/profile/import', { bundle });
+    } catch (err) {
+      // 失败恢复按钮可重试;错误继续抛给 run() 弹 toast
+      btn.disabled = false; btn.textContent = '导入';
+      throw err;
+    }
+    await loadAll();
+    render(); // 主区刷新;弹窗保持打开展示明细
+    const lines = [
+      ...r.installedRepos.map((x) => `✓ ${x}  已安装`),
+      ...r.skippedRepos.map((x) => `- ${x}  已在库中,跳过`),
+      ...r.failed.map((f) => `✗ ${f.repo}  ${f.message}`),
+      `local 技能还原 ${r.localRestored.length} 个;项目新增 ${r.projectsAdded} 个(同名跳过 ${r.projectsSkipped});MCP 新增 ${r.mcpsAdded} 个${r.globalImported ? ';全局档案已导入' : ''}`,
+      ...(r.warnings || []).map((w) => `警告: ${w}`),
+    ];
+    modal.querySelector('#pf-result').innerHTML =
+      `<div class="rec-list">${lines.map((l) => `<div class="rec-item"><div class="rdesc">${esc(l)}</div></div>`).join('')}</div>`;
+    btn.textContent = '已导入';
+    toast(`导入完成:仓库新装 ${r.installedRepos.length},失败 ${r.failed.length}`, r.failed.length ? 'err' : 'ok');
+  }));
 }
 
 // ---------- 启动 ----------

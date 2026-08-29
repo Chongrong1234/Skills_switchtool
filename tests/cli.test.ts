@@ -29,9 +29,18 @@ async function cli(...args: string[]): Promise<RunResult> {
 
 /** 同 cli,但可指定子进程工作目录(测 --path 缺省取 cwd 用) */
 async function cliIn(cwd: string | undefined, ...args: string[]): Promise<RunResult> {
+  return cliFull(cwd, {}, ...args);
+}
+
+/** 同 cli,但可附加环境变量(测用户级目录用 HOME/USERPROFILE 指到临时目录,绝不碰真实 home) */
+async function cliWithEnv(env: NodeJS.ProcessEnv, ...args: string[]): Promise<RunResult> {
+  return cliFull(undefined, env, ...args);
+}
+
+async function cliFull(cwd: string | undefined, env: NodeJS.ProcessEnv, ...args: string[]): Promise<RunResult> {
   try {
     const { stdout, stderr } = await execFileP('node', [CLI, ...args], {
-      env: { ...process.env, SSW_HOME: sswHome },
+      env: { ...process.env, SSW_HOME: sswHome, ...env },
       cwd,
     });
     return { stdout, stderr, code: 0 };
@@ -270,5 +279,70 @@ describe('ssw CLI', () => {
     expect(rm.code).toBe(0);
     const listAfter = JSON.parse((await cli('mcp', 'list', '--json')).stdout);
     expect(listAfter.map((m: { name: string }) => m.name)).toEqual(['remote']);
+  });
+
+  it('global / profile / adopt 全流程(用户级目录用临时 HOME 隔离)', async () => {
+    const fakeHome = await fs.mkdtemp(path.join(os.tmpdir(), 'ssw-cli-home-'));
+    const env = { HOME: fakeHome, USERPROFILE: fakeHome };
+    try {
+      await cli('skill', 'init', '--name', 'g-cli', '--desc', '全局共享');
+
+      // global:agents → bind → apply → show → unapply → apply → rollback
+      expect((await cli('global', 'agents', 'claude-code')).code).toBe(0);
+      expect((await cli('global', 'bind', 'local:g-cli')).code).toBe(0);
+      expect((await cli('global', 'bind', 'local:ghost')).code).not.toBe(0); // 不存在的 skill 报错
+      const apply = await cliWithEnv(env, 'global', 'apply', '--json');
+      expect(apply.code).toBe(0);
+      expect(JSON.parse(apply.stdout).applied).toHaveLength(1);
+      const link = path.join(fakeHome, '.claude', 'skills', 'g-cli');
+      expect((await fs.lstat(link)).isSymbolicLink()).toBe(true);
+
+      const show = JSON.parse((await cli('global', 'show', '--json')).stdout);
+      expect(show.skills).toEqual(['local:g-cli']);
+      expect(show.agents).toEqual(['claude-code']);
+
+      const unapply = await cliWithEnv(env, 'global', 'unapply', '--json');
+      expect(JSON.parse(unapply.stdout).removed).toHaveLength(1);
+      await cliWithEnv(env, 'global', 'apply');
+      const rb = await cliWithEnv(env, 'global', 'rollback');
+      expect(rb.code).toBe(0);
+      await expect(fs.lstat(link)).rejects.toThrow();
+
+      // profile:导出到文件 → 全新 SSW_HOME 导入(local 技能文件内嵌还原 + 全局档案跟随)
+      const pf = path.join(projectDir, 'p.json');
+      expect((await cli('profile', 'export', '--file', pf)).code).toBe(0);
+      const bundle = JSON.parse(await fs.readFile(pf, 'utf8'));
+      expect(bundle.format).toBe('ssw-profile@1');
+      expect(bundle.skills.some((s: { id: string }) => s.id === 'local:g-cli')).toBe(true);
+      expect(Object.keys(bundle.localFiles)).toContain('local:g-cli');
+
+      const home2 = await fs.mkdtemp(path.join(os.tmpdir(), 'ssw-cli-home2-'));
+      try {
+        const imp = await cliWithEnv({ ...env, SSW_HOME: home2 }, 'profile', 'import', pf, '--json');
+        expect(imp.code).toBe(0);
+        const impR = JSON.parse(imp.stdout);
+        expect(impR.localRestored).toEqual(['local:g-cli']);
+        expect(impR.globalImported).toBe(true);
+        expect(await fs.readFile(path.join(home2, 'library', 'local__g-cli', 'SKILL.md'), 'utf8')).toContain('g-cli');
+        const g2 = JSON.parse((await cliWithEnv({ SSW_HOME: home2 }, 'global', 'show', '--json')).stdout);
+        expect(g2.skills).toEqual(['local:g-cli']);
+      } finally {
+        await fs.rm(home2, { recursive: true, force: true });
+      }
+
+      // adopt:用户在 ~/.claude/skills 自攒的 skill 收养进中央库
+      const ownDir = path.join(fakeHome, '.claude', 'skills', 'own-skill');
+      await fs.mkdir(ownDir, { recursive: true });
+      await fs.writeFile(path.join(ownDir, 'SKILL.md'), '---\nname: own-skill\ndescription: 自攒\n---\n', 'utf8');
+      const adopt = await cliWithEnv(env, 'skill', 'adopt', '--agent', 'claude-code', '--user', '--json');
+      expect(adopt.code).toBe(0);
+      expect(JSON.parse(adopt.stdout).adopted.map((s: { id: string }) => s.id)).toEqual(['local:own-skill']);
+      // 幂等:再收养一次全部跳过
+      const again = JSON.parse((await cliWithEnv(env, 'skill', 'adopt', '--agent', 'claude-code', '--user', '--json')).stdout);
+      expect(again.adopted).toEqual([]);
+      expect(again.skipped).toContain('own-skill');
+    } finally {
+      await fs.rm(fakeHome, { recursive: true, force: true });
+    }
   });
 });

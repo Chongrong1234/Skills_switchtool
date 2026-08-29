@@ -1,7 +1,7 @@
 /**
  * 版本号单一来源:package.json。
  * esbuild 打包单文件 CLI 时由 scripts/build-cli.mjs 用 define 注入 __SSW_VERSION__;
- * 其余场景(tsx 跑 src/、node 跑 dist/)运行时读 ../package.json
+ * 其余场景(vitest 直跑 src/、node 跑 dist/)运行时读 ../package.json
  * —— src/ 与 dist/ 都恰好在仓库根下一层,同一条相对路径成立。
  */
 import { readFileSync } from 'node:fs';

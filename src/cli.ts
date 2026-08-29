@@ -6,10 +6,14 @@
  * 错误输出到 stderr 且退出码非零;成功输出到 stdout。
  */
 import { Command } from 'commander';
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import { adapters, getAdapter } from './adapters/index.js';
 import { applyProject, unapplyProject } from './core/apply.js';
+import { applyGlobal, readGlobal, rollbackGlobal, unapplyGlobal, updateGlobal } from './core/global.js';
+import { exportProfile, importProfile } from './core/profile.js';
 import {
+  adoptFromAgent,
   initSkill,
   installFromGithub,
   installFromLocal,
@@ -428,6 +432,30 @@ leaf(skillCmd.command('update').description('更新 skill(省略 id 则更新全
   }),
 );
 
+leaf(
+  skillCmd
+    .command('adopt')
+    .description('收养 agent 目录里已有的 skills 进中央库(逆向于 apply)')
+    .requiredOption('--agent <id>', 'agent id(见 ssw agents)')
+    .option('--user', '收养用户级(全局)skills 目录,缺省为项目级')
+    .option('--path <path>', '项目根目录(项目级作用域用;缺省取当前工作目录)'),
+).action(
+  wrap(async (cmd, opts: { agent: string; user?: boolean; path?: string }) => {
+    const r = await adoptFromAgent(opts.agent, {
+      scope: opts.user ? 'user' : 'project',
+      projectPath: path.resolve(opts.path ?? '.'),
+    });
+    out(cmd, r, () => {
+      const lines = [
+        ...r.adopted.map((s) => `✓ ${s.id}  已收养`),
+        ...r.skipped.map((n) => `- ${n}  已在库中,跳过`),
+        ...r.invalid.map((i) => `✗ ${i.dir}  ${i.reason}`),
+      ];
+      return lines.length ? lines.join('\n') : '(该目录下没有可收养的 skill)';
+    });
+  }),
+);
+
 // ---------- 迁移码 ----------
 leaf(skillCmd.command('export').description('导出迁移码(仅 github 来源;新环境 ssw skill import 粘贴即可还原)')).action(
   wrap(async (cmd) => {
@@ -498,13 +526,15 @@ const catalogCmd = leaf(
       const catName = (id: string) => CATALOG_CATEGORIES.find((c) => c.id === id)?.name ?? id;
       const lines: string[] = [];
       for (const e of items) {
-        lines.push(
-          `★ ${String(e.stars).padStart(6)}  ${e.name}  [${catName(e.category)}]  ${e.id}${e.installed ? `  (已安装 ${e.installedCount})` : ''}`,
-        );
+        // MCP 条目可能无公开仓库星数(stars 0),不显示 ★;状态文案区分"已安装/已添加"
+        const starTxt = e.stars > 0 ? `★ ${String(e.stars).padStart(6)}` : '         ';
+        const kindTag = e.kind === 'mcp' ? '[MCP]' : '[skills]';
+        const stateTxt = e.installed ? (e.kind === 'mcp' ? '  (已添加)' : `  (已安装 ${e.installedCount})`) : '';
+        lines.push(`${starTxt}  ${e.name}  ${kindTag}[${catName(e.category)}]  ${e.id}${stateTxt}`);
         lines.push(`          ${e.description}`);
       }
       if (!items.length) lines.push('(无匹配条目)');
-      lines.push(`共 ${items.length} 条;安装: ssw catalog install <owner/repo>`);
+      lines.push(`共 ${items.length} 条;安装: ssw catalog install <owner/repo|MCP名>`);
       return lines.join('\n');
     });
   }),
@@ -513,11 +543,20 @@ const catalogCmd = leaf(
 leaf(
   catalogCmd
     .command('install')
-    .description('安装推荐库条目(整仓安装,仓库内全部 skill 都会登记)')
-    .argument('<repo>', '推荐库条目 id(owner/repo)'),
+    .description('安装推荐库条目:skill 条目整仓安装(仓库内全部 skill 登记);MCP 条目写入中央注册表')
+    .argument('<id>', '推荐库条目 id(owner/repo 或 MCP server 名)'),
 ).action(
   wrap(async (cmd, repo: string) => {
     const hit = CATALOG.find((e) => e.id.toLowerCase() === repo.toLowerCase());
+    if (hit?.kind === 'mcp') {
+      // MCP 条目:安装即把载荷写入中央注册表;env/headers 里的密钥是占位符,提示用户替换
+      const entry = await upsertMcp({ name: hit.id, description: hit.description, ...hit.mcp });
+      out(cmd, { inCatalog: true, added: entry }, () =>
+        `已添加 MCP server: ${entry.name}(${entry.transport})\n` +
+        '提示:若条目带密钥占位符(YOUR_*),请用 ssw mcp add 同名覆盖或在 GUI 的 MCP 页修改',
+      );
+      return;
+    }
     // 命中目录则用条目的规范 URL 与 subdir(合集仓库的 skills 子目录)安装
     const installed = await installFromGithub(hit ? hit.url : repo, hit?.subdir);
     out(cmd, { inCatalog: !!hit, installed }, () =>
@@ -528,19 +567,130 @@ leaf(
   }),
 );
 
-// ---------- serve(web GUI) ----------
-program
-  .command('serve')
-  .description('启动 Web GUI 服务(默认端口 5174)')
-  .option('--port <port>', '监听端口', '5174')
-  .action(
-    wrap(async (_cmd, opts: { port: string }) => {
-      const { startServer, serverPort } = await import('./serve.js');
-      const server = await startServer(Number(opts.port));
-      console.log(`Skills SwitchTool 已启动: http://localhost:${serverPort(server)}`);
-      // serve 是长驻命令:保持进程,由 listener 维持事件循环
-    }),
-  );
+// ---------- global 全局(用户级)共享 ----------
+const globalCmd = program.command('global').description('全局共享:一次配置,物化到各 agent 的用户级 skills 目录,所有项目共享');
+
+leaf(globalCmd.command('show').description('查看全局共享配置')).action(
+  wrap(async (cmd) => {
+    const g = await readGlobal();
+    const registry = await readRegistry();
+    const skills = registry.filter((s) => g.skills.includes(s.id));
+    out(cmd, { ...g, skillDetails: skills }, () => {
+      const lines = [
+        `目标 agents: ${g.agents.join(', ') || '(未设置,用 ssw global agents 设置)'}`,
+        `apply 模式: ${g.applyMode}`,
+        `上次 apply: ${fmtTime(g.lastAppliedAt)}`,
+        `技能集(${skills.length}):`,
+        ...skills.map((s) => `  ${s.id.padEnd(24)} ${s.name} - ${s.description}`),
+      ];
+      return lines.join('\n');
+    });
+  }),
+);
+
+leaf(
+  globalCmd.command('bind').description('设置全局技能集(整体替换)').argument('<skillId...>', '一个或多个 skill id'),
+).action(
+  wrap(async (cmd, skillIds: string[]) => {
+    const registry = await readRegistry();
+    const missing = skillIds.filter((id) => !registry.some((s) => s.id === id));
+    if (missing.length) throw new Error(`库中不存在这些 skill: ${missing.join(', ')}`);
+    await updateGlobal({ skills: skillIds });
+    out(cmd, { skills: skillIds }, () => `全局技能集已更新(${skillIds.length} 个)`);
+  }),
+);
+
+leaf(
+  globalCmd
+    .command('agents')
+    .description('设置全局目标 agents(整体替换)')
+    .argument('<id...>', '一个或多个 agent id')
+    .option('--mode <mode>', 'apply 模式: symlink|copy'),
+).action(
+  wrap(async (cmd, ids: string[], opts: { mode?: string }) => {
+    for (const id of ids) {
+      if (!getAdapter(id)) throw new Error(`未知 agent: ${id}(可用: ${adapters.map((a) => a.id).join(', ')})`);
+    }
+    if (opts.mode && !['symlink', 'copy'].includes(opts.mode)) throw new Error('--mode 只能是 symlink 或 copy');
+    await updateGlobal({ agents: ids, ...(opts.mode ? { applyMode: opts.mode as 'symlink' | 'copy' } : {}) });
+    out(cmd, { agents: ids }, () => `全局目标 agents 已更新: ${ids.join(', ')}`);
+  }),
+);
+
+leaf(globalCmd.command('apply').description('把全局技能集物化到各 agent 的用户级 skills 目录')).action(
+  wrap(async (cmd) => {
+    const result = await applyGlobal();
+    out(cmd, result, () => {
+      const lines = [`已全局应用 ${result.applied.length} 项`];
+      for (const a of result.applied) lines.push(`  [${a.agentId}] ${a.skillName} -> ${a.target} (${a.mode})`);
+      for (const w of result.warnings) lines.push(`  警告: ${w}`);
+      return lines.join('\n');
+    });
+  }),
+);
+
+leaf(globalCmd.command('unapply').description('移除全局共享的物化结果')).action(
+  wrap(async (cmd) => {
+    const result = await unapplyGlobal();
+    out(cmd, result, () => `已移除 ${result.removed.length} 项(全局共享)`);
+  }),
+);
+
+leaf(globalCmd.command('rollback').description('回滚最近一次全局 apply 快照')).action(
+  wrap(async (cmd) => {
+    const result = await rollbackGlobal();
+    if (!result.restored) throw new Error(result.detail);
+    out(cmd, result, () => result.detail);
+  }),
+);
+
+// ---------- profile 配置库导出/导入 ----------
+const profileCmd = program.command('profile').description('配置库整体导出/导入(跨机器/跨平台共享,含 local 技能与项目档案)');
+
+leaf(
+  profileCmd.command('export').description('导出完整配置库为 JSON(缺省打 stdout)').option('--file <path>', '写入文件而不是 stdout'),
+).action(
+  wrap(async (cmd, opts: { file?: string }) => {
+    const { bundle, warnings } = await exportProfile();
+    if (opts.file) {
+      await fs.writeFile(path.resolve(opts.file), JSON.stringify(bundle, null, 2), 'utf8');
+      out(cmd, { file: opts.file, warnings }, () =>
+        `已导出配置库到 ${opts.file}(skills ${bundle.skills.length}、MCP ${bundle.mcps.length}、项目 ${bundle.projects.projects.length})` +
+        (warnings.length ? `\n${warnings.map((w) => `警告: ${w}`).join('\n')}` : ''),
+      );
+    } else {
+      // 走 stdout 时警告打 stderr,保证 stdout 是合法 JSON(管道友好)
+      for (const w of warnings) console.error(`警告: ${w}`);
+      console.log(JSON.stringify(bundle, null, 2));
+    }
+  }),
+);
+
+leaf(
+  profileCmd.command('import').description('从 JSON 文件导入配置库').argument('<file>', 'profile JSON 文件路径'),
+).action(
+  wrap(async (cmd, file: string) => {
+    let bundle: unknown;
+    try {
+      bundle = JSON.parse(await fs.readFile(path.resolve(file), 'utf8'));
+    } catch (err) {
+      throw new Error(`读取 profile 文件失败: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    const r = await importProfile(bundle);
+    out(cmd, r, () => {
+      const lines = [
+        ...r.installedRepos.map((repo) => `✓ ${repo}  已安装`),
+        ...r.skippedRepos.map((repo) => `- ${repo}  已在库中,跳过`),
+        ...r.failed.map((f) => `✗ ${f.repo}  ${f.message}`),
+        `local 技能还原 ${r.localRestored.length} 个;项目新增 ${r.projectsAdded} 个(同名跳过 ${r.projectsSkipped});MCP 新增 ${r.mcpsAdded} 个${r.globalImported ? ';全局档案已导入' : ''}`,
+        ...r.warnings.map((w) => `警告: ${w}`),
+      ];
+      return lines.join('\n');
+    });
+    // 有失败项时退出码非零,方便脚本判断(同 skill import 约定)
+    if (r.failed.length) process.exitCode = 1;
+  }),
+);
 
 // 不带任何参数启动:TTY 下进入交互式终端面板,非 TTY(管道/脚本)打印帮助
 if (process.argv.length <= 2) {

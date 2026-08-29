@@ -11,7 +11,7 @@
 [![Runtime Deps](https://img.shields.io/badge/runtime%20deps-2-orange.svg)](package.json)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%C2%B7%20Windows%20%C2%B7%20macOS-lightgrey.svg)](electron-builder.yml)
 
-**Web GUI · Electron 桌面 App · 纯 CLI(含终端面板),共享同一份数据**
+**Electron 桌面 App · 纯 CLI(含终端面板),共享同一份数据**
 
 </div>
 
@@ -31,7 +31,7 @@ Agent skills 默认是**全局共享**的:所有项目用过的 skills 都堆在
 
 ### 解法:把 skills 的管理单位从「全局」降到「项目」
 
-Skills SwitchTool 让每个项目绑定**自己专属的技能组合**,只把这套组合物化到该项目的 agent 技能目录(`.claude/skills`、`.kimi-code/skills`、`.cursor/skills`、`.codex/skills`)。模型在这个项目里工作时,**只看得到、只调得到属于这个项目的 skills**——前端项目里不会出现写作技能,后端项目里不会冒出设计技能,任务不再错乱。
+Skills SwitchTool 让每个项目绑定**自己专属的技能组合**,只把这套组合物化到该项目的 agent 技能目录(`.claude/skills`、`.kimi-code/skills`、`.cursor/skills`、`.codex/skills`、`.gemini/skills` 等,含通用互操作目录 `.agents/skills`)。模型在这个项目里工作时,**只看得到、只调得到属于这个项目的 skills**——前端项目里不会出现写作技能,后端项目里不会冒出设计技能,任务不再错乱。
 
 ```
 🎨 my-blog(前端项目)      → ui-styling + banner-design + design-tokens
@@ -57,8 +57,11 @@ ssw project switch api-server    # 激活项目 → 该项目的技能组合自�
 | 🔗 **symlink 物化** | 默认软链写入,库更新即时生效;失败自动降级 copy 并告警;同名冲突先移入快照再覆盖 |
 | 🔌 **MCP 服务也按项目管** | MCP server 集中在库里登记(stdio/http/sse),按项目绑定;apply 时**合并**写入各 agent 的项目级配置(`.mcp.json`、`.kimi-code/mcp.json`、`.cursor/mcp.json`、`.codex/config.toml`),保留你已有的其它配置,同样走快照可回滚 |
 | 📸 **快照可回滚** | 每次 apply 自动快照(每项目留 5 份),配错了一键还原 |
-| 🔍 **智能推荐 + 内置推荐库** | 识别项目技术栈推荐 GitHub 高 star skills;另内置 27 个精选仓库 / 8 大类,离线可浏览,一键安装;断网安静降级 |
-| 🖥️ **三种打开方式** | 浏览器 Web GUI、Electron 桌面 App、纯 CLI/终端面板——同一份核心,同一份状态 |
+| 🌐 **全局共享** | 项目配方之外,还可把选定 skills 物化到各 agent 的**用户级**目录(`~/.claude/skills` 等):一次配置,该 agent 的所有项目共享 |
+| 📦 **配置库整体搬家** | `ssw profile export/import` 把技能库 + MCP + 项目档案 + 全局共享打成单文件,跨机器、跨平台共享同一份配置;导入幂等 |
+| 🤝 **收养既有 skills** | `ssw skill adopt` 把各 agent 目录里已存在的 skills 一键收进中央库,先纳管再统一分发 |
+| 🔍 **智能推荐 + 内置推荐库** | 识别项目技术栈推荐 GitHub 高 star skills;另内置 52 个精选 skill 仓库 + 14 个常用 MCP server / 11 大类,离线可浏览,一键安装;断网安静降级 |
+| 🖥️ **两种打开方式** | Electron 桌面 App 点点点、纯 CLI/终端面板——同一份核心,同一份状态 |
 | 🪶 **极致轻量** | 运行时仅 2 个依赖(express + commander);CLI 可打成零依赖单文件,拷到服务器即用 |
 
 ## 使用方法
@@ -81,17 +84,7 @@ npm run app        # 编译并启动桌面 App(需图形环境)
 
 然后:**新建项目(绑定目录)→ 勾选 skills 和目标 agents → 一键 apply**。技能集即写入各 agent 的项目级 skills 目录;之后切换项目,技能跟着走。
 
-> 💡 没有图形环境?用 `npm run dist:cli` 打出零依赖单文件 CLI 拷到服务器(见下文「单文件分发」),或 `npm run dev` 起 Web GUI。
-
-### Web GUI(浏览器版)
-
-```bash
-npm run dev      # 开发模式:tsx 直接跑,默认 http://localhost:5174(PORT 环境变量覆盖)
-npm start        # 或:跑编译产物(先 npm run build)
-ssw serve        # 或:CLI 子命令启动(--port 指定端口)
-```
-
-> ⚠️ 服务**无认证**,且 Web 模式默认监听所有网卡(`0.0.0.0`):本机使用没问题;部署到服务器时请自行限制监听范围,或套一层带认证的反向代理。桌面 App 模式只监听 `127.0.0.1`,无此问题。
+> 💡 没有图形环境?用 `npm run dist:cli` 打出零依赖单文件 CLI 拷到服务器(见下文「单文件分发」)。
 
 ### 桌面 App(Electron)
 
@@ -115,7 +108,8 @@ chmod +x "release/Skills SwitchTool-"*.AppImage
 
 ```bash
 skills    # 或 ssw —— ↑↓ 选项目,Enter 切换并 apply,
-          # a apply / u unapply / r 回滚 / s 技能库 / m MCP 库 / q 退出
+          # a apply / u unapply / r 回滚 / s 技能库 / m MCP 库
+          # g 全局共享(视图内 a/u/r 作用于全局) / c 推荐库 / q 退出
 ```
 
 非 TTY(管道、脚本)下裸跑则打印帮助。常用子命令:
@@ -138,12 +132,17 @@ ssw skill add --local /path/to/skill
 ssw skill init --name X --desc "..."    # 自建 skill 脚手架
 ssw skill remove <id> / update [id]
 ssw skill export / import <code>        # 迁移码:批量搬家 skills
-ssw catalog [--category dev] [--q 关键词]   # 内置推荐库浏览
-ssw catalog install <owner/repo>        # 一键安装推荐库条目
+ssw skill adopt --agent claude-code [--user|--path .]   # 把 agent 目录里既有的 skills 收进中央库
+ssw catalog [--category dev] [--q 关键词]   # 内置推荐库浏览(skill + MCP)
+ssw catalog install <owner/repo|mcp名>   # 一键安装推荐库条目
 ssw recommend [--path /abs/path] [--keywords a,b,c]            # 按技术栈智能推荐
+ssw global show / bind <skillId...> / agents <agentId...> [--mode symlink|copy]  # 全局(用户级)共享
+ssw global apply / unapply / rollback   # 物化到各 agent 用户级目录(~/.claude/skills 等),可回滚
+ssw profile export [--file x.json]      # 整套配置库导出为单文件(跨机器/跨平台搬家)
+ssw profile import <file>               # 导入配置库(幂等,已有条目跳过)
 ```
 
-约定:`id|name` 寻址(先精确匹配 id,再匹配 name,歧义时报错列候选);全局 `--json` 输出方便脚本化;错误打 stderr、退出码非零。CLI 与 GUI/桌面版共用 `~/.skills-switch/`,三种前端看到的是同一份状态。
+约定:`id|name` 寻址(先精确匹配 id,再匹配 name,歧义时报错列候选);全局 `--json` 输出方便脚本化;错误打 stderr、退出码非零;clone/pull 时终端下显示进度条(写 stderr,不干扰 `--json` 解析)。CLI 与桌面版共用 `~/.skills-switch/`,两个前端看到的是同一份状态。
 
 本机使用:`npm run build` 后 `node dist/cli.js ...`(`npm link` 后可直接 `ssw ...` 或 `skills ...`)。
 

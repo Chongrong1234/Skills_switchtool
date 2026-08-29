@@ -115,4 +115,58 @@ describe('server 校验(与 CLI 行为对齐)', () => {
     expect((await api('GET', `/api/projects/${c.data.id}`)).data.mcps).toEqual([]);
     expect((await api('DELETE', '/api/mcps/fs')).status).toBe(404);
   });
+
+  it('global 端点:默认档案、PUT 校验与回写', async () => {
+    const def = await api('GET', '/api/global');
+    expect(def.status).toBe(200);
+    expect(def.data).toMatchObject({ skills: [], agents: [], applyMode: 'symlink' });
+
+    expect((await api('PUT', '/api/global', { applyMode: 'zip' })).status).toBe(400);
+    const badAgents = await api('PUT', '/api/global', { agents: ['ghost-agent'] });
+    expect(badAgents.status).toBe(400);
+    expect(badAgents.data.error).toContain('未知 agent');
+    expect((await api('PUT', '/api/global', { skills: ['local:ghost'] })).status).toBe(400);
+
+    const ok = await api('PUT', '/api/global', { agents: ['claude-code'], applyMode: 'copy' });
+    expect(ok.status).toBe(200);
+    expect(ok.data.agents).toEqual(['claude-code']);
+    expect(ok.data.applyMode).toBe('copy');
+    // 不写 apply 端点:它会物化到真实用户级目录,api 层只验证档案读写与校验
+  });
+
+  it('skills adopt 端点:校验与空目录', async () => {
+    expect((await api('POST', '/api/skills/adopt', {})).status).toBe(400);
+    const unknown = await api('POST', '/api/skills/adopt', { agent: 'ghost-agent' });
+    expect(unknown.status).toBe(400);
+    expect(unknown.data.error).toContain('未知 agent');
+    const projDir = path.join(tmp, 'proj');
+    await fs.mkdir(path.join(projDir, '.claude', 'skills'), { recursive: true });
+    const ok = await api('POST', '/api/skills/adopt', { agent: 'claude-code', scope: 'project', projectPath: projDir });
+    expect(ok.status).toBe(200);
+    expect(ok.data.adopted).toEqual([]);
+  });
+
+  it('profile 端点:导出格式、导入校验', async () => {
+    const exp = await api('GET', '/api/profile/export');
+    expect(exp.status).toBe(200);
+    expect(exp.data.bundle.format).toBe('ssw-profile@1');
+    expect(Array.isArray(exp.data.bundle.skills)).toBe(true);
+
+    expect((await api('POST', '/api/profile/import', {})).status).toBe(400);
+    const bad = await api('POST', '/api/profile/import', { bundle: { format: 'nope' } });
+    expect(bad.status).toBe(400);
+    expect(bad.data.error).toContain('profile 格式');
+    // 空 profile 导入(无 github 来源,不碰网络)是合法空操作
+    const empty = await api('POST', '/api/profile/import', {
+      bundle: { format: 'ssw-profile@1', skills: [], mcps: [], projects: { activeProjectId: null, projects: [] }, global: { skills: [], agents: [], applyMode: 'symlink' }, localFiles: {} },
+    });
+    expect(empty.status).toBe(200);
+    expect(empty.data.installedRepos).toEqual([]);
+  });
+
+  it('GET /api/progress:空闲时返回空任务列表(GUI 进度条轮询端点)', async () => {
+    const r = await api('GET', '/api/progress');
+    expect(r.status).toBe(200);
+    expect(r.data).toEqual({ jobs: [] });
+  });
 });

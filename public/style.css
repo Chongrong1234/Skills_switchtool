@@ -247,6 +247,25 @@ body {
 .toast.err { border-left-color: var(--red); }
 @keyframes slide-in { from { transform: translateX(30px); opacity: 0; } to { transform: none; opacity: 1; } }
 
+/* ---------- git 进度条(安装/更新的 clone/pull,轮询 /api/progress) ---------- */
+#progress-root {
+  position: fixed; bottom: 18px; right: 18px; z-index: 200;
+  display: none; flex-direction: column; gap: 8px;
+}
+.prog {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  padding: 10px 14px;
+  width: 320px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.4);
+}
+.prog-label { font-size: 12px; font-weight: 600; margin-bottom: 6px; word-break: break-all; }
+.prog-bar { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; margin-bottom: 4px; }
+.prog-fill { height: 100%; background: var(--accent); border-radius: 3px; transition: width 0.3s ease; }
+.prog-text { color: var(--text-dim); font-size: 11px; word-break: break-all; }
+
 /* 技能库卡片网格 */
 .skills-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
 .skill-card {

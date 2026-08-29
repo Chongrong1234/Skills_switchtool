@@ -13,6 +13,7 @@ import {
   listCatalogWithInstalled,
 } from '../src/core/catalog.js';
 import { installFromGithub, LibraryError, registerSkillsIn } from '../src/core/library.js';
+import { upsertMcp } from '../src/core/mcps.js';
 import { upsertSkill } from '../src/core/registry.js';
 import type { SkillEntry } from '../src/core/types.js';
 
@@ -29,16 +30,43 @@ afterEach(async () => {
 });
 
 describe('catalog 静态数据完整性', () => {
-  it('条目非空且 id 无重复、格式为 owner/repo', () => {
+  it('条目非空且 id 无重复', () => {
     expect(CATALOG.length).toBeGreaterThanOrEqual(15);
     const ids = CATALOG.map((e) => e.id);
     expect(new Set(ids).size).toBe(ids.length);
     for (const e of CATALOG) {
-      expect(e.id).toMatch(/^[^/\s]+\/[^/\s]+$/);
-      expect(e.stars).toBeGreaterThan(0);
       expect(e.name.length).toBeGreaterThan(0);
       expect(e.description.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('skill 条目(缺省 kind):id 为 owner/repo,url 与 id 对应,stars > 0', () => {
+    const skills = CATALOG.filter((e) => e.kind !== 'mcp');
+    expect(skills.length).toBeGreaterThanOrEqual(15);
+    for (const e of skills) {
+      expect(e.id).toMatch(/^[^/\s]+\/[^/\s]+$/);
+      expect(e.stars).toBeGreaterThan(0);
       expect(e.url).toBe(`https://github.com/${e.id}`);
+      expect(e.mcp).toBeUndefined();
+    }
+  });
+
+  it('MCP 条目:id 合法 server 名,载荷与 transport 匹配(stdio 有 command,远端有 url)', () => {
+    const mcps = CATALOG.filter((e) => e.kind === 'mcp');
+    expect(mcps.length).toBeGreaterThanOrEqual(10);
+    for (const e of mcps) {
+      expect(e.id).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
+      expect(e.stars).toBeGreaterThanOrEqual(0); // 无公开仓库的官方托管 MCP 记 0
+      expect(e.subdir).toBeUndefined();
+      const spec = e.mcp;
+      expect(spec).toBeDefined();
+      if (spec!.transport === 'stdio') {
+        expect(spec!.command).toBeTruthy();
+        expect(spec!.url).toBeUndefined();
+      } else {
+        expect(spec!.url).toMatch(/^https:\/\//);
+        expect(spec!.command).toBeUndefined();
+      }
     }
   });
 
@@ -110,6 +138,17 @@ describe('listCatalogWithInstalled 标记', () => {
   it('过滤条件同样生效', async () => {
     const items = await listCatalogWithInstalled({ category: 'research' });
     expect(items.every((i) => i.category === 'research')).toBe(true);
+  });
+
+  it('MCP 条目:中央注册表有同名 server 即标记已添加', async () => {
+    const target = CATALOG.find((e) => e.kind === 'mcp')!;
+    await upsertMcp({ name: target.id, transport: 'stdio', command: 'npx' });
+    const items = await listCatalogWithInstalled();
+    const hit = items.find((i) => i.id === target.id)!;
+    expect(hit.installed).toBe(true);
+    expect(hit.installedCount).toBe(1);
+    // 其它 MCP 条目不受影响
+    expect(items.find((i) => i.kind === 'mcp' && i.id !== target.id && i.installed)).toBeUndefined();
   });
 });
 

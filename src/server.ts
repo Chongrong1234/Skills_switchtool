@@ -8,11 +8,15 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { adapters, getAdapter } from './adapters/index.js';
 import { applyProject, unapplyProject } from './core/apply.js';
+import { applyGlobal, readGlobal, rollbackGlobal, unapplyGlobal, updateGlobal } from './core/global.js';
+import { exportProfile, importProfile } from './core/profile.js';
 import {
+  adoptFromAgent,
   initSkill,
   installFromGithub,
   installFromLocal,
   LibraryError,
+  listGitProgress,
   listSkills,
   uninstall,
 } from './core/library.js';
@@ -224,6 +228,11 @@ export function createApp(): express.Express {
     res.json(await listSkills());
   }));
 
+  // git 任务进度:安装/更新的 clone/pull 进度,GUI/Electron 轮询渲染进度条
+  app.get('/api/progress', (_req, res) => {
+    res.json({ jobs: listGitProgress() });
+  });
+
   // 迁移码:导出库中 github 来源的仓库简写集合;导入即逐仓安装(局部失败不中断)
   app.get('/api/skills/export', h(async (_req, res) => {
     const code = exportSkillsCode(await listSkills());
@@ -281,6 +290,65 @@ export function createApp(): express.Express {
     const project = await getProject(projectId);
     if (!project) return void res.status(404).json({ error: '项目不存在' });
     res.json(await recommendForProject(project.path, project.name));
+  }));
+
+  // 收养:把 agent 目录(user 级或项目级)里已有的 skills 复制进中央库(逆向于 apply)
+  app.post('/api/skills/adopt', h(async (req, res) => {
+    const { agent, scope, projectPath } = req.body ?? {};
+    if (!agent || typeof agent !== 'string') return void res.status(400).json({ error: 'agent 必填' });
+    if (scope !== undefined && !['user', 'project'].includes(scope)) {
+      return void res.status(400).json({ error: 'scope 只能是 user 或 project' });
+    }
+    // 项目级作用域的路径缺省取服务进程 cwd(与 POST /api/projects 的约定一致)
+    res.json(await adoptFromAgent(agent, { scope: scope ?? 'project', projectPath: projectPath || process.cwd() }));
+  }));
+
+  // ---- global 全局(用户级)共享:一次配置,所有项目共享 ----
+  app.get('/api/global', h(async (_req, res) => {
+    res.json(await readGlobal());
+  }));
+
+  app.put('/api/global', h(async (req, res) => {
+    const { skills, agents, applyMode } = req.body ?? {};
+    if (applyMode !== undefined && !['symlink', 'copy'].includes(applyMode)) {
+      return void res.status(400).json({ error: 'applyMode 只能是 symlink 或 copy' });
+    }
+    if (skills !== undefined) {
+      const err = await validateSkillIds(skills);
+      if (err) return void res.status(400).json({ error: err });
+    }
+    if (agents !== undefined) {
+      const err = validateAgents(agents);
+      if (err) return void res.status(400).json({ error: err });
+    }
+    const patch: Parameters<typeof updateGlobal>[0] = {};
+    if (skills !== undefined) patch.skills = skills;
+    if (agents !== undefined) patch.agents = agents;
+    if (applyMode !== undefined) patch.applyMode = applyMode;
+    res.json(await updateGlobal(patch));
+  }));
+
+  app.post('/api/global/apply', h(async (_req, res) => {
+    res.json(await applyGlobal());
+  }));
+
+  app.post('/api/global/unapply', h(async (_req, res) => {
+    res.json(await unapplyGlobal());
+  }));
+
+  app.post('/api/global/rollback', h(async (_req, res) => {
+    res.json(await rollbackGlobal());
+  }));
+
+  // ---- profile 配置库导出/导入(跨机器/跨平台共享,含 local 技能与项目档案)----
+  app.get('/api/profile/export', h(async (_req, res) => {
+    res.json(await exportProfile());
+  }));
+
+  app.post('/api/profile/import', h(async (req, res) => {
+    const { bundle } = req.body ?? {};
+    if (!bundle) return void res.status(400).json({ error: 'bundle 必填' });
+    res.json(await importProfile(bundle));
   }));
 
   // 托管前端单页应用

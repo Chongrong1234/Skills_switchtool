@@ -62,15 +62,25 @@ describe('Windows 兼容:symlink 降级', () => {
 
 describe('Windows 兼容:git 缺失的可读错误', () => {
   it('spawn git ENOENT 时报"未找到 git 命令"而不是裸崩溃', async () => {
-    // mock child_process.execFile 为 ENOENT(library.ts 顶层 promisify 包装它)
+    // mock child_process.spawn 为 ENOENT(library.ts 用 spawn 流式读 stderr 渲染进度条)
     vi.resetModules();
     vi.doMock('node:child_process', async (importOriginal) => {
       const orig = await importOriginal<typeof import('node:child_process')>();
+      const { EventEmitter } = await import('node:events');
       return {
         ...orig,
-        execFile: (...args: unknown[]) => {
-          const cb = args[args.length - 1] as (e: Error) => void;
-          cb(Object.assign(new Error('spawn git ENOENT'), { code: 'ENOENT' }));
+        spawn: (..._args: unknown[]) => {
+          // 最小可用假 ChildProcess:stdin.end/stdout/stderr/kill + 异步发 ENOENT 的 error 事件
+          const fake = Object.assign(new EventEmitter(), {
+            stdin: { end: () => undefined },
+            stdout: new EventEmitter(),
+            stderr: new EventEmitter(),
+            kill: () => true,
+          });
+          queueMicrotask(() =>
+            fake.emit('error', Object.assign(new Error('spawn git ENOENT'), { code: 'ENOENT' })),
+          );
+          return fake;
         },
       };
     });

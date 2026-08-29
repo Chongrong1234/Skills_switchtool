@@ -3,19 +3,18 @@
  * 库是唯一事实来源,所有 skill 实体都存放在 ~/.skills-switch/library/ 下。
  * git 调用统一走 runGit:有超时(默认 120s,SSW_GIT_TIMEOUT_MS 覆盖)且禁用交互式
  * 凭据提示——本工具常跑在 GUI/服务进程里,git 一旦挂起或在用户看不到的终端等输入,
- * 表现就是前端永远"安装中…"。
+ * 表现就是前端永远"安装中…"。clone/pull 带 --progress,进度段解析后兵分两路:
+ * TTY 下渲染单行进度条到 stderr;同时写入 gitProgress 内存表供 /api/progress
+ * 轮询(GUI/Electron 进度条)——大仓库克隆要好几分钟,零输出会让用户以为死机。
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { spawn } from 'node:child_process';
 import { getAdapter } from '../adapters/index.js';
 import { libraryDir } from './paths.js';
 import { detachSkillFromProjects } from './projects.js';
 import { getSkill, readRegistry, upsertSkill, writeRegistry } from './registry.js';
 import type { SkillEntry } from './types.js';
-
-const execFileP = promisify(execFile);
 
 export class LibraryError extends Error {}
 
@@ -38,35 +37,194 @@ function gitSubcommand(args: string[]): string {
   return args[0] ?? 'git';
 }
 
+/** 进度条字符宽度 */
+const PROGRESS_BAR_WIDTH = 24;
+
+/** 解析后的 git 进度段:pct 为 null 的是非百分比行(如 Cloning into '...') */
+interface ProgressSegment {
+  text: string;          // 去掉 remote: 前缀的整段原文
+  phase: string | null;  // Receiving objects 等阶段名
+  pct: number | null;
+  rest: string;          // 百分比后的附加信息,如 (45/100), 1.0 MiB | 2.0 MiB/s
+  done: boolean;         // 该阶段收尾(100% 或带 done.)
+}
+
+/** 解析 git --progress 的一段(段间 \r 或 \n 分隔);空段返回 null */
+function parseProgressSegment(raw: string): ProgressSegment | null {
+  const text = raw.trim().replace(/^remote:\s*/, '');
+  if (!text) return null;
+  const m = text.match(/^([A-Za-z][A-Za-z ]{0,30}):\s+(\d{1,3})%\s*(.*)$/);
+  if (!m) return { text, phase: null, pct: null, rest: '', done: false };
+  const pct = Math.min(100, Number(m[2]));
+  return {
+    text,
+    phase: m[1],
+    pct,
+    rest: m[3].replace(/,?\s*done\.?\s*$/, ''),
+    done: pct >= 100 || /done\.?\s*$/.test(m[3]),
+  };
+}
+
+/** 进行中的 git 任务进度,key = label(同一仓库同一时刻只会有一个 clone/pull) */
+export interface GitProgress {
+  label: string;         // "克隆 owner/repo" / "更新 owner/repo"
+  phase: string | null;
+  pct: number | null;
+  text: string;          // 附加信息(百分比行的 rest;非百分比行的整行)
+  updatedAt: number;
+}
+
+const gitProgress = new Map<string, GitProgress>();
+
+/** 进行中的 git 任务快照:server 的 GET /api/progress 轮询用(GUI/Electron 进度条) */
+export function listGitProgress(): GitProgress[] {
+  return [...gitProgress.values()];
+}
+
 /**
- * 执行 git 子命令。三类失败都包装成可读的 LibraryError 而不是裸崩溃/挂死:
+ * git 进度条渲染器(CLI 用):把进度段渲染成单行进度条写 stderr
+ * (--json 的 stdout 保持干净)。仅 stderr 是 TTY 时输出;服务/GUI 进程非 TTY,
+ * 自动静默——它们的进度走上面的 gitProgress 内存表,由 /api/progress 轮询。
+ */
+function createProgressRenderer(label: string): { renderSegment: (seg: ProgressSegment) => void; end: () => void } {
+  let midLine = false;   // 当前有一行未换行的进度条
+  let lastPhase = '';    // 上一阶段名;阶段切换时换行,避免覆盖上一阶段的收尾行
+  const enabled = Boolean(process.stderr.isTTY);
+  return {
+    renderSegment(seg: ProgressSegment): void {
+      if (!enabled) return;
+      if (seg.phase === null || seg.pct === null) {
+        // 非进度行(如 Cloning into '...',连接建立前的"存活证明"):整行打印
+        process.stderr.write(`\r\x1b[K  ${label}: ${seg.text}\n`);
+        midLine = false;
+        lastPhase = '';
+        return;
+      }
+      if (midLine && seg.phase !== lastPhase) process.stderr.write('\n');
+      const filled = Math.round((seg.pct / 100) * PROGRESS_BAR_WIDTH);
+      const bar = '█'.repeat(filled) + '░'.repeat(PROGRESS_BAR_WIDTH - filled);
+      process.stderr.write(
+        `\r\x1b[K  ${label}: ${seg.phase} [${bar}] ${String(seg.pct).padStart(3)}%${seg.rest ? `  ${seg.rest}` : ''}`,
+      );
+      midLine = !seg.done;
+      if (seg.done) process.stderr.write('\n');
+      lastPhase = seg.phase;
+    },
+    end(): void {
+      if (enabled && midLine) {
+        process.stderr.write('\n');
+        midLine = false;
+      }
+    },
+  };
+}
+
+/** 从 stderr 提取失败原因:剥掉进度段(百分比行),取最后几行有效内容 */
+function summarizeStderr(stderr: string): string {
+  return stderr
+    .split(/[\r\n]+/)
+    .map((s) => s.trim().replace(/^remote:\s*/, ''))
+    .filter((s) => s && !/^[A-Za-z][A-Za-z ]{0,30}:\s+\d{1,3}%/.test(s))
+    .slice(-6)
+    .join('; ');
+}
+
+/** stdout+stderr 合计上限(等价旧 execFile 的 maxBuffer):防异常输出刷爆内存 */
+const MAX_GIT_OUTPUT = 16 * 1024 * 1024;
+
+/**
+ * 执行 git 子命令。失败都包装成可读的 LibraryError 而不是裸崩溃/挂死:
  * - git 不在 PATH(spawn ENOENT,Windows 常见)
- * - 超时:killed 为 true 说明是本进程的 timeout 杀掉了子进程(网络挂起等)
+ * - 超时:主动 SIGTERM 子进程(网络挂起等)
  * - 凭据提示:GIT_TERMINAL_PROMPT=0 强制失败而非在控制终端等输入——
  *   GUI/服务进程里那个提示用户根本看不到,表现就是永久"安装中…"
+ * 用 spawn 而非 execFile:流式读 stderr 才能实时渲染 clone/pull 进度条
+ * (execFile 攒到结束才回调,大仓库几分钟零输出,用户以为死机)。
  */
-async function runGit(args: string[]): Promise<void> {
+async function runGit(args: string[], label?: string): Promise<void> {
   const sub = gitSubcommand(args);
   const timeoutMs = gitTimeoutMs();
-  try {
-    // maxBuffer 调大:大仓库 clone/pull 失败时 stderr 可能很长,默认 1MB 会把真实错误截断成 "maxBuffer exceeded"
-    await execFileP('git', args, {
-      maxBuffer: 16 * 1024 * 1024,
-      timeout: timeoutMs,
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn('git', args, {
       env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
     });
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException)?.code;
-    if (code === 'ENOENT') {
-      throw new LibraryError('未找到 git 命令(请先安装 Git 并加入 PATH);从 GitHub 安装/更新 skill 需要 git');
-    }
-    if ((err as { killed?: boolean })?.killed) {
-      throw new LibraryError(
-        `git ${sub} 超时(${Math.round(timeoutMs / 1000)}s 未完成):网络访问 GitHub 过慢或不可达,请检查网络/代理后重试`,
-      );
-    }
-    throw new LibraryError(`git ${sub} 失败: ${err instanceof Error ? err.message : String(err)}`);
-  }
+    // git 不需要我们的 stdin,直接关掉(配合 GIT_TERMINAL_PROMPT=0 杜绝任何等输入)
+    child.stdin.end();
+    let stdout = '';
+    let stderr = '';
+    let killedByTimeout = false;
+    let outputOverflow = false;
+    let settled = false;
+    const progress = label ? createProgressRenderer(label) : null;
+    let pending = ''; // 未遇到分隔符的半段,留到下一块拼上
+    /** 处理一段完整进度段:更新内存表(GUI 轮询)+ 渲染 TTY 进度条 */
+    const handleSegment = (raw: string): void => {
+      if (!label) return;
+      const seg = parseProgressSegment(raw);
+      if (!seg) return;
+      gitProgress.set(label, {
+        label,
+        phase: seg.phase,
+        pct: seg.pct,
+        text: seg.phase ? seg.rest : seg.text,
+        updatedAt: Date.now(),
+      });
+      progress?.renderSegment(seg);
+    };
+    const timer = setTimeout(() => {
+      killedByTimeout = true;
+      child.kill('SIGTERM');
+    }, timeoutMs);
+    const done = (err?: Error): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (pending.trim()) handleSegment(pending);
+      progress?.end();
+      if (label) gitProgress.delete(label); // 任务结束即摘表,GUI 请求返回后自行隐藏进度条
+      if (err) reject(err);
+      else resolve();
+    };
+    child.on('error', (err) => {
+      // spawn 失败(典型:ENOENT,git 不在 PATH)
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        done(new LibraryError('未找到 git 命令(请先安装 Git 并加入 PATH);从 GitHub 安装/更新 skill 需要 git'));
+      } else {
+        done(new LibraryError(`git ${sub} 启动失败: ${err.message}`));
+      }
+    });
+    const onData = (which: 'stdout' | 'stderr') => (d: Buffer | string): void => {
+      const s = String(d);
+      if (which === 'stdout') stdout += s;
+      else {
+        stderr += s;
+        pending += s;
+        const parts = pending.split(/[\r\n]/);
+        pending = parts.pop() ?? '';
+        for (const segRaw of parts) handleSegment(segRaw);
+      }
+      if (!outputOverflow && stdout.length + stderr.length > MAX_GIT_OUTPUT) {
+        outputOverflow = true;
+        child.kill('SIGTERM');
+      }
+    };
+    child.stdout.on('data', onData('stdout'));
+    child.stderr.on('data', onData('stderr'));
+    // 用 close 而非 exit:等 stdio 流刷完,stderr 才完整
+    child.on('close', (code) => {
+      if (killedByTimeout) {
+        done(new LibraryError(
+          `git ${sub} 超时(${Math.round(timeoutMs / 1000)}s 未完成):网络访问 GitHub 过慢或不可达,请检查网络/代理后重试`,
+        ));
+      } else if (outputOverflow) {
+        done(new LibraryError(`git ${sub} 失败: 输出超过 ${Math.round(MAX_GIT_OUTPUT / 1024 / 1024)}MB 上限`));
+      } else if (code === 0) {
+        done();
+      } else {
+        done(new LibraryError(`git ${sub} 失败: ${summarizeStderr(stderr) || `退出码 ${code}`}`));
+      }
+    });
+  });
 }
 
 /** skill 名称合法性:小写字母/数字/连字符开头规则 + Windows 保留名黑名单(CON/PRN 等建目录会失败) */
@@ -215,8 +373,8 @@ export async function installFromGithub(uri: string, subdir?: string): Promise<S
   await fs.mkdir(libraryDir(), { recursive: true });
   try {
     // -c core.longpaths=true:Windows 默认 260 字符路径上限,库路径叠加合集仓库深目录可能超限;
-    // 其它平台该配置静默无效
-    await runGit(['-c', 'core.longpaths=true', 'clone', '--depth', '1', cloneUrl, dest]);
+    // 其它平台该配置静默无效。--progress:stderr 已被管道接管,不显式要进度 git 就不汇报
+    await runGit(['-c', 'core.longpaths=true', 'clone', '--progress', '--depth', '1', cloneUrl, dest], `克隆 ${owner}/${repo}`);
   } catch (err) {
     // clone 失败(含超时被 kill)不留半个仓库的残目录,避免污染后续同名安装
     await fs.rm(dest, { recursive: true, force: true }).catch(() => { /* 清理失败不掩盖原始错误 */ });
@@ -320,7 +478,7 @@ export async function updateSkill(id: string): Promise<SkillEntry> {
   if (entry.source.type === 'github') {
     const { owner, repo } = normalizeGithubUri(entry.source.uri);
     const repoDir = path.join(libraryDir(), `github__${owner}__${repo}`);
-    await runGit(['-C', repoDir, 'pull', '--ff-only']);
+    await runGit(['-C', repoDir, 'pull', '--progress', '--ff-only'], `更新 ${owner}/${repo}`);
     const { name, description } = await validateSkillDir(skillDirOf(entry));
     const next = { ...entry, name, description };
     await upsertSkill(next);
