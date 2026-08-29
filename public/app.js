@@ -345,11 +345,36 @@ function openSettingsModal() {
         <label><input type="radio" name="st-theme" value="light" ${cur === 'light' ? 'checked' : ''} /> 浅色</label>
       </div>
     </div>
-    <div class="modal-actions"><button class="btn" id="m-close">关闭</button></div>
+    <div class="form-row"><label>环境自检(数据目录 / git / agent 检测 / 数据文件)</label>
+      <div id="st-doctor"><div class="loading-text">自检中…</div></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" id="m-rerun-doctor">重新自检</button>
+      <button class="btn" id="m-close">关闭</button>
+    </div>
   `);
   modal.querySelector('#m-close').addEventListener('click', closeModal);
   modal.querySelectorAll('input[name="st-theme"]').forEach((r) =>
     r.addEventListener('change', () => setTheme(r.value)));
+  // 环境自检:与 ssw doctor / TUI d 键同一份报告(GET /api/doctor)
+  const box = modal.querySelector('#st-doctor');
+  const runDoctorCheck = () => {
+    box.innerHTML = '<div class="loading-text">自检中…</div>';
+    api('GET', '/api/doctor')
+      .then((d) => {
+        const icon = { ok: '✓', warn: '⚠', error: '✗' };
+        box.innerHTML =
+          d.checks.map((c) => `
+            <div class="rdesc">${icon[c.level] || ''} ${esc(c.label)}${c.hint ? `<br>&nbsp;&nbsp;&nbsp;建议: ${esc(c.hint)}` : ''}</div>
+          `).join('') +
+          `<div class="rdesc" style="margin-top:6px">版本 v${esc(d.version)} · skills ${d.stats.skills} / MCP ${d.stats.mcps} / 项目 ${d.stats.projects}${d.stats.activeProject ? `(当前激活: ${esc(d.stats.activeProject)})` : ''}</div>`;
+      })
+      .catch((err) => {
+        box.innerHTML = `<div class="empty">自检失败: ${esc(err.message)}</div>`;
+      });
+  };
+  modal.querySelector('#m-rerun-doctor').addEventListener('click', runDoctorCheck);
+  runDoctorCheck();
 }
 
 // ---------- 从库中添加技能 ----------
@@ -421,7 +446,8 @@ function openNewProjectModal() {
       </div>
     </div>
     <div class="form-row"><label>目标 Agents</label>
-      <div class="agent-checks">${agentCheckboxList()}</div>
+      <div class="agent-checks">${agentCheckboxList(state.agents.filter((a) => a.detected && a.id !== 'agents').map((a) => a.id))}</div>
+      <div class="rdesc">已默认勾选本机检测到的 agent;通用互操作目录 agents 可按需手动勾选</div>
     </div>
     <div id="np-recommend"></div>
     <div class="modal-actions">
@@ -452,6 +478,10 @@ function openNewProjectModal() {
     const project = await api('POST', '/api/projects', body);
     state.selectedProjectId = project.id;
     await loadAll();
+    // 允许同名项目,但同名会让寻址歧义,主动提醒
+    if (state.projects.some((p) => p.name === project.name && p.id !== project.id)) {
+      toast(`已存在同名项目「${project.name}」,注意区分`, 'err');
+    }
 
     // 创建成功后拉推荐(加载态 spinner)
     const box = modal.querySelector('#np-recommend');
@@ -574,7 +604,7 @@ function openInstallGithubModal() {
       await loadAll();
       closeModal();
       render();
-      toast(`已安装 ${installed.length} 个 skill`);
+      toast(`已安装 ${installed.length} 个 skill,到项目页绑定后 apply 生效`);
     } catch (err) {
       // 失败恢复按钮可重试(弹窗保持打开);错误继续抛给 run() 弹 toast
       btn.disabled = false; btn.textContent = '安装';
@@ -601,7 +631,7 @@ function openInstallLocalModal() {
     await loadAll();
     closeModal();
     render();
-    toast('已安装');
+    toast('已安装,到项目页绑定后 apply 生效');
   }));
 }
 
@@ -896,7 +926,7 @@ function bindCatalogInstalls(main) {
           const installed = await apiWithProgress('POST', '/api/skills', body);
           await loadAll();
           state.catalog = null; // installed 标记已变化,触发重拉
-          toast(`已安装 ${installed.length} 个 skill`);
+          toast(`已安装 ${installed.length} 个 skill,到项目页绑定后 apply 生效`);
           render();
         }
       } catch (err) {

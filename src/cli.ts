@@ -35,7 +35,8 @@ import { recommendForProject } from './core/recommend.js';
 import { CATALOG, listCatalogCategories, listCatalogWithInstalled } from './core/catalog.js';
 import { exportSkillsCode, importSkillsCode, parseSkillsCode } from './core/migrate.js';
 import { rollback } from './core/snapshot.js';
-import type { Project } from './core/types.js';
+import { runDoctor } from './core/doctor.js';
+import type { Project, SkillEntry } from './core/types.js';
 import { readRegistry } from './core/registry.js';
 import { VERSION } from './version.js';
 
@@ -92,11 +93,44 @@ async function findProject(ref: string): Promise<Project> {
   throw new Error(`找不到项目: ${ref}`);
 }
 
+/**
+ * skill 的 id|name 寻址:库内 id 往往很长(local:x、owner/repo:subdir:skill),
+ * 允许用唯一的 name 简写;歧义列出候选;找不到给出引导(保留"库中不存在"字样,测试依赖)。
+ */
+async function findSkill(ref: string): Promise<SkillEntry> {
+  const registry = await readRegistry();
+  const byId = registry.find((s) => s.id === ref);
+  if (byId) return byId;
+  const byName = registry.filter((s) => s.name === ref);
+  if (byName.length === 1) return byName[0];
+  if (byName.length > 1) {
+    throw new Error(
+      `名称 "${ref}" 匹配到多个 skill,请改用 id:\n` +
+        byName.map((s) => `  ${s.id}  ${s.name}`).join('\n'),
+    );
+  }
+  throw new Error(`库中不存在 skill: ${ref}(用 ssw skill list 查看可用 id/名称)`);
+}
+
+/** 批量解析 skill 引用(id|name),保留输入顺序并按 id 去重 */
+async function resolveSkillRefs(refs: string[]): Promise<SkillEntry[]> {
+  const seen = new Set<string>();
+  const resolved: SkillEntry[] = [];
+  for (const ref of refs) {
+    const s = await findSkill(ref);
+    if (!seen.has(s.id)) {
+      seen.add(s.id);
+      resolved.push(s);
+    }
+  }
+  return resolved;
+}
+
 /** ref 省略时用当前激活项目 */
 async function resolveProject(ref: string | undefined): Promise<Project> {
   if (ref) return findProject(ref);
   const { activeProjectId } = await listProjects();
-  if (!activeProjectId) throw new Error('未指定项目且没有当前激活项目');
+  if (!activeProjectId) throw new Error('未指定项目且没有当前激活项目(用 ssw project switch <id|name> 激活,或显式传项目参数)');
   const p = await getProject(activeProjectId);
   if (!p) throw new Error(`激活项目已不存在: ${activeProjectId}`);
   return p;
@@ -147,20 +181,40 @@ leaf(
     .description('创建项目')
     .requiredOption('--name <name>', '项目名称')
     .option('--path <path>', '项目根目录(缺省取当前工作目录)')
-    .requiredOption('--agents <ids>', '目标 agents,逗号分隔(如 claude-code,kimi-code)')
+    .option('--agents <ids>', '目标 agents,逗号分隔(如 claude-code,kimi-code;缺省取本机检测到的 agent)')
     .option('--mode <mode>', 'apply 模式: symlink|copy', 'symlink'),
 ).action(
-  wrap(async (cmd, opts: { name: string; path?: string; agents: string; mode: string }) => {
+  wrap(async (cmd, opts: { name: string; path?: string; agents?: string; mode: string }) => {
     if (!['symlink', 'copy'].includes(opts.mode)) {
       throw new Error('--mode 只能是 symlink 或 copy');
     }
-    const agentIds = opts.agents.split(',').map((s) => s.trim()).filter(Boolean);
+    // --agents 缺省取本机检测到的具体 agent(排除恒真的通用 'agents' 互操作目录);
+    // 一个都没检测到说明环境异常,必须显式指定
+    let agentIds: string[];
+    let usedDefaultAgents = false;
+    if (opts.agents === undefined) {
+      agentIds = adapters.filter((a) => a.id !== 'agents' && a.detect()).map((a) => a.id);
+      if (!agentIds.length) {
+        throw new Error(`未检测到任何 agent,请显式指定 --agents(可用: ${adapters.map((a) => a.id).join(', ')};自检: ssw doctor)`);
+      }
+      usedDefaultAgents = true;
+    } else {
+      agentIds = opts.agents.split(',').map((s) => s.trim()).filter(Boolean);
+    }
     for (const id of agentIds) {
       if (!getAdapter(id)) throw new Error(`未知 agent: ${id}(可用: ${adapters.map((a) => a.id).join(', ')})`);
     }
     // --path 缺省取当前工作目录:在项目根里跑命令时无需手填
     const p = await createProject({ name: opts.name, path: path.resolve(opts.path ?? '.'), agents: agentIds, applyMode: opts.mode as 'symlink' | 'copy' });
-    out(cmd, p, () => `已创建项目 ${p.name}(${p.id})`);
+    // 允许同名项目,但同名会让 name 寻址歧义,主动提醒
+    const { projects } = await listProjects();
+    const sameName = projects.filter((x) => x.name === p.name && x.id !== p.id);
+    out(cmd, p, () =>
+      `已创建项目 ${p.name}(${p.id})` +
+      (usedDefaultAgents ? `\n目标 agents 取本机检测结果: ${agentIds.join(', ')}` : '') +
+      (sameName.length ? `\n警告: 已存在同名项目「${p.name}」,后续寻址建议用 id` : '') +
+      `\n下一步: ssw project bind ${p.id} <skillId|名称...> 绑定技能,然后 ssw project switch ${p.id}`,
+    );
   }),
 );
 
@@ -246,15 +300,16 @@ leaf(
     .command('bind')
     .description('设置项目技能集(整体替换)')
     .argument('<id|name>', '项目 id 或名称')
-    .argument('<skillId...>', '一个或多个 skill id'),
+    .argument('<skillId|name...>', '一个或多个 skill id 或名称(名称唯一时可用)'),
 ).action(
-  wrap(async (cmd, ref: string, skillIds: string[]) => {
+  wrap(async (cmd, ref: string, skillRefs: string[]) => {
     const p = await findProject(ref);
-    const registry = await readRegistry();
-    const missing = skillIds.filter((id) => !registry.some((s) => s.id === id));
-    if (missing.length) throw new Error(`库中不存在这些 skill: ${missing.join(', ')}`);
-    await setProjectSkills(p.id, skillIds);
-    out(cmd, { projectId: p.id, skills: skillIds }, () => `项目「${p.name}」技能集已更新(${skillIds.length} 个)`);
+    const skills = await resolveSkillRefs(skillRefs);
+    const ids = skills.map((s) => s.id);
+    await setProjectSkills(p.id, ids);
+    out(cmd, { projectId: p.id, skills: ids }, () =>
+      `项目「${p.name}」技能集已更新(${ids.length} 个)\n下一步: ssw project apply ${p.id} 使配置生效`,
+    );
   }),
 );
 
@@ -335,7 +390,9 @@ leaf(
       url: opts.url,
       headers: parsePairs(opts.header, '--header'),
     });
-    out(cmd, entry, () => `已添加 MCP server: ${entry.name}(${entry.transport})`);
+    out(cmd, entry, () =>
+      `已添加 MCP server: ${entry.name}(${entry.transport})\n下一步: ssw project bind-mcp <项目> ${entry.name} 绑定到项目后 apply 生效`,
+    );
   }),
 );
 
@@ -375,10 +432,16 @@ leaf(
     if (opts.local && opts.subdir) throw new Error('--subdir 仅支持 --github 来源');
     if (opts.github) {
       const installed = await installFromGithub(opts.github, opts.subdir);
-      out(cmd, installed, () => `已从 GitHub 安装 ${installed.length} 个 skill:\n` + installed.map((s) => `  ${s.id}  ${s.name}`).join('\n'));
+      out(cmd, installed, () =>
+        `已从 GitHub 安装 ${installed.length} 个 skill:\n` +
+        installed.map((s) => `  ${s.id}  ${s.name}`).join('\n') +
+        `\n下一步: ssw project bind <项目> ${installed[0].id} 绑定到项目后 apply 生效`,
+      );
     } else {
       const entry = await installFromLocal(opts.local!);
-      out(cmd, entry, () => `已从本地安装: ${entry.id}(${entry.name})`);
+      out(cmd, entry, () =>
+        `已从本地安装: ${entry.id}(${entry.name})\n下一步: ssw project bind <项目> ${entry.id} 绑定到项目后 apply 生效`,
+      );
     }
   }),
 );
@@ -408,25 +471,29 @@ leaf(
       throw new Error('必须指定 --name 与 --desc(或用 --content/--file 提供带 frontmatter 的 SKILL.md)');
     }
     const entry = await initSkill(opts.name ?? '', opts.desc ?? '', content);
-    out(cmd, entry, () => `已创建 skill 脚手架: ${entry.id}(目录在库中,可继续编辑)`);
+    out(cmd, entry, () =>
+      `已创建 skill 脚手架: ${entry.id}(目录在库中,可继续编辑)\n下一步: ssw project bind <项目> ${entry.id} 绑定到项目后 apply 生效`,
+    );
   }),
 );
 
-leaf(skillCmd.command('remove').description('从库中卸载 skill(同时解除各项目的绑定)').argument('<id>', 'skill id')).action(
-  wrap(async (cmd, id: string) => {
-    const r = await uninstall(id);
-    if (!r.removed) throw new Error(`skill 不存在: ${id}`);
+leaf(skillCmd.command('remove').description('从库中卸载 skill(同时解除各项目的绑定)').argument('<id|name>', 'skill id 或名称(名称唯一时可用)')).action(
+  wrap(async (cmd, ref: string) => {
+    const s = await findSkill(ref);
+    const r = await uninstall(s.id);
+    if (!r.removed) throw new Error(`skill 不存在: ${s.id}`);
     out(cmd, r, () =>
-      `已卸载: ${id}` +
+      `已卸载: ${s.id}` +
       (r.alsoRemoved.length ? `\n连带移除同仓库条目: ${r.alsoRemoved.join(', ')}` : ''),
     );
   }),
 );
 
-leaf(skillCmd.command('update').description('更新 skill(省略 id 则更新全部 github 来源)').argument('[id]', 'skill id')).action(
-  wrap(async (cmd, id?: string) => {
-    if (id) {
-      const entry = await updateSkill(id);
+leaf(skillCmd.command('update').description('更新 skill(省略参数则更新全部 github 来源)').argument('[id|name]', 'skill id 或名称(名称唯一时可用)')).action(
+  wrap(async (cmd, ref?: string) => {
+    if (ref) {
+      const s = await findSkill(ref);
+      const entry = await updateSkill(s.id);
       out(cmd, entry, () => `已更新: ${entry.id}`);
       return;
     }
@@ -621,14 +688,13 @@ leaf(globalCmd.command('show').description('查看全局共享配置')).action(
 );
 
 leaf(
-  globalCmd.command('bind').description('设置全局技能集(整体替换)').argument('<skillId...>', '一个或多个 skill id'),
+  globalCmd.command('bind').description('设置全局技能集(整体替换)').argument('<skillId|name...>', '一个或多个 skill id 或名称(名称唯一时可用)'),
 ).action(
-  wrap(async (cmd, skillIds: string[]) => {
-    const registry = await readRegistry();
-    const missing = skillIds.filter((id) => !registry.some((s) => s.id === id));
-    if (missing.length) throw new Error(`库中不存在这些 skill: ${missing.join(', ')}`);
-    await updateGlobal({ skills: skillIds });
-    out(cmd, { skills: skillIds }, () => `全局技能集已更新(${skillIds.length} 个)`);
+  wrap(async (cmd, skillRefs: string[]) => {
+    const skills = await resolveSkillRefs(skillRefs);
+    const ids = skills.map((s) => s.id);
+    await updateGlobal({ skills: ids });
+    out(cmd, { skills: ids }, () => `全局技能集已更新(${ids.length} 个)\n下一步: ssw global apply 使配置生效`);
   }),
 );
 
@@ -721,6 +787,27 @@ leaf(
     });
     // 有失败项时退出码非零,方便脚本判断(同 skill import 约定)
     if (r.failed.length) process.exitCode = 1;
+  }),
+);
+
+// ---------- doctor 环境自检 ----------
+leaf(
+  program.command('doctor').description('环境自检:数据目录/git/agent 检测/数据文件健康度,附修复建议'),
+).action(
+  wrap(async (cmd) => {
+    const report = await runDoctor();
+    out(cmd, { version: VERSION, ...report }, () => {
+      const icon = { ok: '✓', warn: '⚠', error: '✗' } as const;
+      const lines = [
+        `Skills SwitchTool v${VERSION} 环境自检`,
+        ...report.checks.map((c) => `${icon[c.level]} ${c.label}${c.hint ? `\n    建议: ${c.hint}` : ''}`),
+        `统计: skills ${report.stats.skills} / MCP ${report.stats.mcps} / 项目 ${report.stats.projects}` +
+          (report.stats.activeProject ? `(当前激活: ${report.stats.activeProject})` : ''),
+      ];
+      return lines.join('\n');
+    });
+    // 存在 error 级问题时退出码非零,便于脚本/CI 判断(warn 不算失败)
+    if (!report.ok) process.exitCode = 1;
   }),
 );
 

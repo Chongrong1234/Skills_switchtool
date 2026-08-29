@@ -57,6 +57,16 @@ describe('server 校验(与 CLI 行为对齐)', () => {
     expect(bad.status).toBe(400);
   });
 
+  it('GET /api/doctor 返回环境自检报告(与 ssw doctor 同一份)', async () => {
+    const r = await api('GET', '/api/doctor');
+    expect(r.status).toBe(200);
+    expect(typeof r.data.version).toBe('string');
+    expect(r.data.ok).toBe(true);
+    expect(r.data.sswHome).toBe(tmp);
+    expect(r.data.checks.map((c: { id: string }) => c.id)).toEqual(['ssw-home', 'git', 'agents', 'registry', 'projects', 'mcps', 'global']);
+    expect(r.data.stats).toEqual({ skills: 0, mcps: 0, projects: 0, activeProject: null });
+  });
+
   it('绑定不存在的 skillId 返回 400', async () => {
     const c = await api('POST', '/api/projects', { name: 'x', path: '/tmp/x', agents: [] });
     expect(c.status).toBe(201);

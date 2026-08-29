@@ -36,6 +36,8 @@ import { listMcps, McpError, removeMcp, upsertMcp } from './core/mcps.js';
 import { recommendForProject } from './core/recommend.js';
 import { readRegistry } from './core/registry.js';
 import { rollback } from './core/snapshot.js';
+import { runDoctor } from './core/doctor.js';
+import { VERSION } from './version.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -101,6 +103,11 @@ export function createApp(): express.Express {
   app.get('/api/meta', (_req, res) => {
     res.json({ cwd: process.cwd() });
   });
+
+  // ---- doctor:环境自检(桌面 GUI 设置弹窗的数据源;与 ssw doctor 同一份报告)----
+  app.get('/api/doctor', h(async (_req, res) => {
+    res.json({ version: VERSION, ...(await runDoctor()) });
+  }));
 
   // ---- projects ----
   app.get('/api/projects', h(async (_req, res) => {

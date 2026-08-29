@@ -394,4 +394,60 @@ describe('ssw CLI', () => {
     expect(items.length).toBe(dev.count);
     expect(items.every((e: { category: string }) => e.category === dev.id)).toBe(true);
   });
+
+  it('skill 支持 id|name 寻址:bind/remove 可用名称;不存在时报错含引导', async () => {
+    await cli('skill', 'init', '--name', 'byname', '--desc', 'x');
+    await cli('project', 'create', '--name', 'np', '--path', projectDir, '--agents', 'claude-code');
+    // 用名称 bind(库内 id 是 local:byname)
+    const bind = await cli('project', 'bind', 'np', 'byname', '--json');
+    expect(bind.code).toBe(0);
+    expect(JSON.parse(bind.stdout).skills).toEqual(['local:byname']);
+    // 用名称 remove
+    const rm = await cli('skill', 'remove', 'byname');
+    expect(rm.code).toBe(0);
+    expect(rm.stdout).toContain('local:byname');
+    // 不存在 → 报错并引导看 skill list
+    const ghost = await cli('project', 'bind', 'np', 'ghost-skill');
+    expect(ghost.code).not.toBe(0);
+    expect(ghost.stderr).toContain('库中不存在');
+  });
+
+  it('project create 免 --agents:缺省取本机检测到的 agent(不含恒真的通用 agents);零检测时报错', async () => {
+    const fakeHome = await fs.mkdtemp(path.join(os.tmpdir(), 'ssw-cli-home-'));
+    try {
+      await fs.mkdir(path.join(fakeHome, '.claude'), { recursive: true });
+      const env = { HOME: fakeHome, USERPROFILE: fakeHome };
+      const r = await cliWithEnv(env, 'project', 'create', '--name', 'auto', '--path', projectDir, '--json');
+      expect(r.code).toBe(0);
+      expect(JSON.parse(r.stdout).agents).toEqual(['claude-code']);
+      // 一个 agent 都没检测到时必须显式指定(报错给出可用列表)
+      const emptyHome = await fs.mkdtemp(path.join(os.tmpdir(), 'ssw-cli-empty-'));
+      try {
+        const bad = await cliWithEnv({ HOME: emptyHome, USERPROFILE: emptyHome }, 'project', 'create', '--name', 'noagent', '--path', projectDir);
+        expect(bad.code).not.toBe(0);
+        expect(bad.stderr).toContain('未检测到任何 agent');
+      } finally {
+        await fs.rm(emptyHome, { recursive: true, force: true });
+      }
+    } finally {
+      await fs.rm(fakeHome, { recursive: true, force: true });
+    }
+  });
+
+  it('doctor:环境自检报告;数据文件损坏时退出码非零', async () => {
+    const ok = await cli('doctor', '--json');
+    expect(ok.code).toBe(0);
+    const report = JSON.parse(ok.stdout);
+    expect(report.ok).toBe(true);
+    expect(typeof report.version).toBe('string');
+    expect(report.checks.map((c: { id: string }) => c.id)).toEqual(['ssw-home', 'git', 'agents', 'registry', 'projects', 'mcps', 'global']);
+    expect(report.stats).toEqual({ skills: 0, mcps: 0, projects: 0, activeProject: null });
+
+    // 损坏 registry.json → error 级,退出码非零,人类输出带 ✗ 与修复建议
+    await fs.writeFile(path.join(sswHome, 'registry.json'), '{oops', 'utf8');
+    const bad = await cli('doctor');
+    expect(bad.code).not.toBe(0);
+    expect(bad.stdout).toContain('✗');
+    expect(bad.stdout).toContain('建议');
+  });
 });

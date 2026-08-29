@@ -97,6 +97,11 @@ src/
                          #   kind:'mcp' 条目的 mcp 载荷与 upsertMcp 对齐(env/headers 密钥为占位符),
                          #   installed 标记按 mcps.json 同名判断;listCatalogCategories() 分类统计
                          #   (count/skills/mcps)供 GUI 标签角标、CLI catalog categories、TUI 分类切换共用
+    doctor.ts            # 环境自检 runDoctor():数据目录可写/git 探活(spawn git --version,10s 超时)/
+                         #   agent 检测(排除恒真的 'agents')/四个 JSON 数据文件健康度(缺失=首用 ok,
+                         #   损坏=error 附修复 hint——运行时被 readJsonSafe 容错吞掉的损坏在这里暴露)+ 统计;
+                         #   git 缺失与零 agent 检测只算 warn,ok = 无 error 级;CLI doctor / /api/doctor /
+                         #   TUI d 键 / GUI 设置弹窗共用
   adapters/
     types.ts             # AgentAdapter 接口(id/displayName/detect/projectSkillsDir/userSkillsDir/capabilities/mcp?/validate?);
                          #   userSkillsDir() 是全局共享 apply 的目标(用户级 skills 目录);
@@ -117,20 +122,25 @@ src/
                          #   /api/mcps CRUD + /api/projects/:id/mcps 绑定(校验名字在注册表存在);
                          #   /api/global GET/PUT + apply/unapply/rollback;/api/profile/export|import;
                          #   GET /api/progress:git clone/pull 任务进度(前端进度条轮询);
-                         #   POST /api/skills/adopt 收养 agent 目录既有 skills
+                         #   POST /api/skills/adopt 收养 agent 目录既有 skills;
+                         #   GET /api/doctor:环境自检报告(带 version,GUI 设置弹窗数据源)
   serve.ts               # startServer(port, host?) 启动函数:仅 Electron 主进程进程内调用(127.0.0.1+随机端口)
-  cli.ts                 # ssw/skills 入口:全部子命令;id|name 寻址(id 精确优先,name 歧义列候选报错);
+  cli.ts                 # ssw/skills 入口:全部子命令;id|name 寻址(id 精确优先,name 歧义列候选报错;
+                         #   项目与 skill 都支持,skill 用名称简写免敲 local:x 长 id);
                          #   --json;无参数且 TTY 时动态 import tui.js 进终端面板,非 TTY 打印帮助;
                          #   project create / recommend 的 --path 缺省取当前工作目录;
+                         #   project create 的 --agents 缺省取本机检测到的 agent(排除恒真 'agents',
+                         #   零检测则报错引导);doctor 环境自检(error 级问题存在时退出码 1);
+                         #   各安装/绑定命令成功输出带「下一步」引导;
                          #   mcp list/add/remove(--command 与 --url 二选一,--env/--header 逗号分隔 KEY=V,--cwd 仅部分 agent 支持)
                          #   + project bind-mcp;catalog install 按条目 kind 分流:skill 整仓安装,mcp 写注册表;
                          #   catalog categories 分类清单(count/skills/mcps 统计,--category 的 id 来源);
                          #   skill init [--name --desc] [--content 文本|--file 路径](粘贴现成 SKILL.md 均可);
                          #   skill adopt --agent <id> [--user|--path];global show/bind/agents/apply/unapply/rollback;
                          #   profile export [--file](警告打 stderr)/ import <file>(导入 failed 非零时退出码 1)
-  tui.ts                 # 终端交互面板:项目列表 + ↑↓/Enter/a/u/r/s/m/g/c/q 按键(g 全局共享视图内 a/u/r
-                         #   作用于全局;推荐库视图内 c 循环切换分类过滤;技能库/MCP/推荐库只读);
-                         #   stdin raw 模式 + ANSI 整帧重绘
+  tui.ts                 # 终端交互面板:项目列表(光标项目附技能/MCP 绑定摘要行)+ ↑↓/Enter/a/u/r/s/m/g/c/d/q
+                         #   按键(g 全局共享视图内 a/u/r 作用于全局;推荐库视图内 c 循环切换分类过滤;
+                         #   d 环境自检视图(d 重跑);技能库/MCP/推荐库只读);stdin raw 模式 + ANSI 整帧重绘
   version.ts             # 版本号单一来源:运行时读 ../package.json(src/ 与 dist/ 都恰在根下一层);
                          #   esbuild 打包单文件时 define 注入 __SSW_VERSION__
 electron/main.mjs        # Electron 主进程:动态 import dist/serve.js,127.0.0.1+端口 0,BrowserWindow 加载
@@ -164,7 +174,7 @@ electron-builder.yml     # 打包配置:Linux AppImage + Windows NSIS(中文安�
 - 测试文件在 `tests/*.test.ts`,每个 core 模块一个对应文件,外加:`platform.test.ts`(Windows 专项:symlink EPERM 降级 copy、git 不在 PATH 的可读报错、Windows 保留名拒绝)、`server.test.ts`(起真实 HTTP 服务验证校验逻辑与 CLI 对齐)、`cli.test.ts`(端到端,用 `child_process` 跑**编译产物** `dist/cli.js`,`beforeAll` 里先自动跑 `npm run build`;Windows 上改用 `npm.cmd` 且必须带 `shell: true`——Node ≥18.20/20.12 起无 shell 直接 spawn `.cmd` 会抛 EINVAL,只换名字绕不过)。
 - **隔离约定(必须遵守)**:测试在 `beforeEach` 里把 `process.env.SSW_HOME` 指向 `fs.mkdtemp` 临时目录,`afterEach` 里删除该环境变量并 `rm` 临时目录——绝不触碰真实 `~/.skills-switch`。涉及真实文件系统的测试保持串行(这也是 `pool: 'forks'` 的原因)。`global.test.ts` 额外用 `vi.spyOn(os, 'homedir')` 指到临时目录,绝不触碰真实 home。
 - 网络相关测试注入假 `fetch`(`recommendForProject(path, name, fetchImpl)` 的第三参),不打真实 GitHub API。
-- 提交改动前跑 `npm test`,当前基线:**15 个文件 150 个用例全绿**。push/PR 由 `.github/workflows/ci.yml` 跑三平台 × Node 18/20/22。
+- 提交改动前跑 `npm test`,当前基线:**16 个文件 157 个用例全绿**。push/PR 由 `.github/workflows/ci.yml` 跑三平台 × Node 18/20/22。
 
 ## 安全注意事项
 

@@ -2,7 +2,7 @@
  * tui.ts —— 终端交互面板(TUI):不带子命令启动 ssw/skills 时进入。
  * 零依赖实现:stdin raw 模式解析按键,ANSI 转义序列渲染,不引入 blessed/Ink。
  * 主视图 = 项目列表(仿 cc-switch 的切换面板):↑↓ 移动光标,Enter 切换并 apply;
- * a apply / u unapply / r 回滚 / s 技能库 / m MCP 库 / g 全局共享 / c 推荐库 / q 或 Ctrl-C 退出,Esc 返回项目视图。
+ * a apply / u unapply / r 回滚 / s 技能库 / m MCP 库 / g 全局共享 / c 推荐库 / d 环境自检 / q 或 Ctrl-C 退出,Esc 返回项目视图。
  * 全局共享视图里 a/u/r 作用于全局(用户级)物化;推荐库视图内 c 循环切换分类过滤;
  * 技能库/MCP 库/推荐库为只读视图(增删改走 CLI 子命令)。
  */
@@ -20,9 +20,10 @@ import { listSkills } from './core/library.js';
 import { listMcps } from './core/mcps.js';
 import { listProjects, setActiveProject } from './core/projects.js';
 import { rollback } from './core/snapshot.js';
+import { runDoctor, type DoctorReport } from './core/doctor.js';
 import type { McpEntry, Project, SkillEntry } from './core/types.js';
 
-type View = 'projects' | 'skills' | 'mcps' | 'global' | 'catalog';
+type View = 'projects' | 'skills' | 'mcps' | 'global' | 'catalog' | 'doctor';
 
 interface State {
   view: View;
@@ -39,6 +40,8 @@ interface State {
   catalog: CatalogEntryWithInstalled[];
   /** 推荐库分类过滤('' = 全部);推荐库视图内按 c 循环切换 */
   catalogCategory: string;
+  /** 环境自检结果(null = 尚未运行;d 键触发) */
+  doctor: DoctorReport | null;
 }
 
 const INV = '\x1b[7m'; // 反色(光标行)
@@ -64,6 +67,7 @@ export async function startTui(): Promise<void> {
     globalProfile: { skills: [], agents: [], applyMode: 'symlink' },
     catalog: [],
     catalogCategory: '',
+    doctor: null,
   };
 
   async function reload(): Promise<void> {
@@ -98,8 +102,16 @@ export async function startTui(): Promise<void> {
         const line = `${mark} ${p.name.padEnd(16)} ${cut(p.path, 32).padEnd(32)} [${p.agents.join(',')}]  skills: ${p.skills.length}  mcps: ${p.mcps.length}`;
         lines.push(i === state.cursor ? `${INV} ${cut(line, cols - 2)} ${RESET}` : ` ${cut(line, cols - 2)}`);
       });
+      // 光标项目的绑定摘要:列表行只有数量,这里给出具体名字,免得为看绑定切来切去
+      const cur = state.projects[state.cursor];
+      if (cur) {
+        const skillNames = cur.skills.map((id) => state.skills.find((s) => s.id === id)?.name ?? id);
+        const summary = `└ ${cur.name}: ${skillNames.join(', ') || '(未绑定技能)'}` +
+          (cur.mcps.length ? `  |  MCP: ${cur.mcps.join(', ')}` : '');
+        lines.push(`${DIM}${cut(summary, cols - 2)}${RESET}`);
+      }
       lines.push('');
-      lines.push(`${DIM}↑↓ 移动  Enter 切换并 apply  a apply  u unapply  r 回滚  s 技能库  m MCP库  g 全局共享  c 推荐库  q 退出${RESET}`);
+      lines.push(`${DIM}↑↓ 移动  Enter 切换并 apply  a apply  u unapply  r 回滚  s 技能库  m MCP库  g 全局共享  c 推荐库  d 自检  q 退出${RESET}`);
     } else if (state.view === 'skills') {
       lines.push(`技能库(${state.skills.length}):`);
       lines.push('');
@@ -140,7 +152,7 @@ export async function startTui(): Promise<void> {
       }
       lines.push('');
       lines.push(`${DIM}a apply  u unapply  r 回滚  Esc 返回项目视图  q 退出${RESET}`);
-    } else {
+    } else if (state.view === 'catalog') {
       const catName = (id: string) => CATALOG_CATEGORIES.find((c) => c.id === id)?.name ?? id;
       const filtered = state.catalogCategory
         ? state.catalog.filter((e) => e.category === state.catalogCategory)
@@ -155,6 +167,26 @@ export async function startTui(): Promise<void> {
       }
       lines.push('');
       lines.push(`${DIM}c 切换分类  Esc 返回项目视图  q 退出${RESET}`);
+    } else if (state.view === 'doctor') {
+      lines.push('环境自检:');
+      lines.push('');
+      const d = state.doctor;
+      if (!d) {
+        lines.push('(按 d 运行自检)');
+      } else {
+        const icon = { ok: '✓', warn: '⚠', error: '✗' } as const;
+        for (const c of d.checks.slice(0, rows - 10)) {
+          lines.push(` ${icon[c.level]} ${cut(c.label, cols - 6)}`);
+          if (c.hint) lines.push(`     ${DIM}${cut(c.hint, cols - 8)}${RESET}`);
+        }
+        lines.push('');
+        lines.push(
+          `统计: skills ${d.stats.skills} / MCP ${d.stats.mcps} / 项目 ${d.stats.projects}` +
+            (d.stats.activeProject ? `(当前激活: ${d.stats.activeProject})` : ''),
+        );
+      }
+      lines.push('');
+      lines.push(`${DIM}d 重新自检  Esc 返回项目视图  q 退出${RESET}`);
     }
 
     if (state.message) {
@@ -241,6 +273,16 @@ export async function startTui(): Promise<void> {
         }
         return;
       }
+      if (state.view === 'doctor') {
+        // 自检视图:d 重跑一次(结果走 message 行反馈 ok/error)
+        if (key === 'd') {
+          void run(async () => {
+            state.doctor = await runDoctor();
+            return state.doctor.ok ? '✓ 自检通过' : '✗ 自检发现 error 级问题,见上方列表';
+          });
+        }
+        return;
+      }
       if (state.view !== 'projects') return; // 技能库/MCP 库为只读视图,只响应 Esc/q
       switch (key) {
         case '\u001b[A': // ↑
@@ -270,6 +312,14 @@ export async function startTui(): Promise<void> {
           state.view = 'catalog';
           state.message = '';
           render();
+          break;
+        case 'd': // 进入自检视图并立即跑一遍
+          state.view = 'doctor';
+          state.message = '';
+          void run(async () => {
+            state.doctor = await runDoctor();
+            return state.doctor.ok ? '✓ 自检通过' : '✗ 自检发现 error 级问题,见上方列表';
+          });
           break;
         case '\r': { // Enter:切换激活项目并 apply
           const p = currentProject();

@@ -109,18 +109,20 @@ chmod +x "release/Skills SwitchTool-"*.AppImage
 ```bash
 skills    # 或 ssw —— ↑↓ 选项目,Enter 切换并 apply,
           # a apply / u unapply / r 回滚 / s 技能库 / m MCP 库
-          # g 全局共享(视图内 a/u/r 作用于全局) / c 推荐库(视图内 c 切换分类) / q 退出
+          # g 全局共享(视图内 a/u/r 作用于全局) / c 推荐库(视图内 c 切换分类) / d 环境自检 / q 退出
 ```
 
 非 TTY(管道、脚本)下裸跑则打印帮助。常用子命令:
 
 ```bash
+ssw doctor                              # 环境自检:数据目录/git/agent 检测/数据文件健康度,附修复建议
 ssw agents                              # 各 agent 适配器及 detected 状态
 ssw project list                        # 项目列表,* 为当前激活项
-ssw project create --name X --agents claude-code,kimi-code [--path /abs/path] [--mode symlink|copy]
-ssw project switch <id|name>            # 设为当前项目并 apply(--path 缺省取当前目录)
+ssw project create --name X [--agents claude-code,kimi-code] [--path /abs/path] [--mode symlink|copy]
+                                        # --agents 缺省取本机检测到的 agent;--path 缺省取当前目录
+ssw project switch <id|name>            # 设为当前项目并 apply
 ssw project apply / unapply / rollback [id|name]
-ssw project bind <id|name> <skillId...> # 设置项目技能集(整体替换)
+ssw project bind <id|name> <skillId|name...> # 设置项目技能集(整体替换;skill 可用名称简写)
 ssw project bind-mcp <id|name> <mcpName...>   # 设置项目 MCP 服务集(整体替换)
 ssw mcp list
 ssw mcp add --name X --command npx [--args -y,pkg] [--env K=V,...]   # stdio 本地服务
@@ -131,20 +133,20 @@ ssw skill add --github <owner/repo 或 URL> [--subdir skills]   # 合集仓库�
 ssw skill add --local /path/to/skill
 ssw skill init --name X --desc "..."    # 自建 skill 脚手架
 ssw skill init --file SKILL.md          # 粘贴/导入现成 SKILL.md(--content 直接给文本;frontmatter 自动带出 name/desc)
-ssw skill remove <id> / update [id]
+ssw skill remove <id|name> / update [id|name]
 ssw skill export / import <code>        # 迁移码:批量搬家 skills
 ssw skill adopt --agent claude-code [--user|--path .]   # 把 agent 目录里既有的 skills 收进中央库
 ssw catalog [--category dev] [--q 关键词]   # 内置推荐库浏览(skill + MCP)
 ssw catalog categories                  # 分类清单:每类条目数(skill/MCP 细分)
 ssw catalog install <owner/repo|mcp名>   # 一键安装推荐库条目
 ssw recommend [--path /abs/path] [--keywords a,b,c]            # 按技术栈智能推荐
-ssw global show / bind <skillId...> / agents <agentId...> [--mode symlink|copy]  # 全局(用户级)共享
+ssw global show / bind <skillId|name...> / agents <agentId...> [--mode symlink|copy]  # 全局(用户级)共享
 ssw global apply / unapply / rollback   # 物化到各 agent 用户级目录(~/.claude/skills 等),可回滚
 ssw profile export [--file x.json]      # 整套配置库导出为单文件(跨机器/跨平台搬家)
 ssw profile import <file>               # 导入配置库(幂等,已有条目跳过)
 ```
 
-约定:`id|name` 寻址(先精确匹配 id,再匹配 name,歧义时报错列候选);全局 `--json` 输出方便脚本化;错误打 stderr、退出码非零;clone/pull 时终端下显示进度条(写 stderr,不干扰 `--json` 解析)。CLI 与桌面版共用 `~/.skills-switch/`,两个前端看到的是同一份状态。
+约定:项目与 skill 均支持 `id|name` 寻址(先精确匹配 id,再匹配 name,歧义时报错列候选);全局 `--json` 输出方便脚本化;错误打 stderr、退出码非零;clone/pull 时终端下显示进度条(写 stderr,不干扰 `--json` 解析)。CLI 与桌面版共用 `~/.skills-switch/`,两个前端看到的是同一份状态。
 
 本机使用:`npm run build` 后 `node dist/cli.js ...`(`npm link` 后可直接 `ssw ...` 或 `skills ...`)。
 
