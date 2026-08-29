@@ -167,7 +167,10 @@ describe('ssw CLI', () => {
     const r = await cli('agents', '--json');
     expect(r.code).toBe(0);
     const agents = JSON.parse(r.stdout);
-    expect(agents.map((a: { id: string }) => a.id)).toEqual(['claude-code', 'kimi-code', 'cursor', 'codex']);
+    expect(agents.map((a: { id: string }) => a.id)).toEqual([
+      'claude-code', 'kimi-code', 'cursor', 'codex',
+      'agents', 'gemini-cli', 'copilot', 'windsurf', 'opencode', 'roo-code',
+    ]);
     expect(typeof agents[0].detected).toBe('boolean');
   });
 
@@ -208,5 +211,64 @@ describe('ssw CLI', () => {
     expect(r.code).toBe(0);
     const pkg = JSON.parse(await fs.readFile(path.resolve(__dirname, '..', 'package.json'), 'utf8'));
     expect(r.stdout.trim()).toBe(pkg.version);
+  });
+
+  it('mcp add → bind-mcp → apply 写入 .mcp.json → unapply 摘除 → remove', async () => {
+    // add(stdio + 逗号 args/env)
+    const add = await cli('mcp', 'add', '--name', 'fs', '--command', 'npx',
+      '--args', '-y,@mcp/server', '--env', 'TOKEN=abc', '--desc', '文件系统', '--json');
+    expect(add.code).toBe(0);
+    const entry = JSON.parse(add.stdout);
+    expect(entry.transport).toBe('stdio');
+    expect(entry.args).toEqual(['-y', '@mcp/server']);
+    expect(entry.env).toEqual({ TOKEN: 'abc' });
+
+    // add(远端,缺省 http)
+    const addRemote = await cli('mcp', 'add', '--name', 'remote', '--url', 'https://mcp.example.com/mcp');
+    expect(addRemote.code).toBe(0);
+
+    // list
+    const list = JSON.parse((await cli('mcp', 'list', '--json')).stdout);
+    expect(list.map((m: { name: string }) => m.name)).toEqual(['fs', 'remote']);
+
+    // 缺 --command/--url 报错
+    const badAdd = await cli('mcp', 'add', '--name', 'bad');
+    expect(badAdd.code).not.toBe(0);
+
+    // create + bind-mcp
+    await cli('project', 'create', '--name', 'mcpproj', '--path', projectDir, '--agents', 'claude-code,codex');
+    const bind = await cli('project', 'bind-mcp', 'mcpproj', 'fs', 'remote');
+    expect(bind.code).toBe(0);
+    // 绑定不存在的 server 报错
+    const badBind = await cli('project', 'bind-mcp', 'mcpproj', 'ghost');
+    expect(badBind.code).not.toBe(0);
+    expect(badBind.stderr).toContain('MCP server');
+
+    // show 里能看到 MCP 服务集
+    const show = await cli('project', 'show', 'mcpproj');
+    expect(show.stdout).toContain('MCP 服务集(2)');
+
+    // apply:claude 写 .mcp.json,codex 写 .codex/config.toml
+    const apply = await cli('project', 'apply', 'mcpproj', '--json');
+    expect(apply.code).toBe(0);
+    expect(JSON.parse(apply.stdout).mcpApplied).toHaveLength(4); // 2 agents × 2 servers
+    const mcpJson = JSON.parse(await fs.readFile(path.join(projectDir, '.mcp.json'), 'utf8'));
+    expect(mcpJson.mcpServers.fs).toEqual({ command: 'npx', args: ['-y', '@mcp/server'], env: { TOKEN: 'abc' } });
+    expect(mcpJson.mcpServers.remote).toEqual({ type: 'http', url: 'https://mcp.example.com/mcp' });
+    const toml = await fs.readFile(path.join(projectDir, '.codex', 'config.toml'), 'utf8');
+    expect(toml).toContain('[mcp_servers.fs]');
+    expect(toml).toContain('[mcp_servers.remote]');
+
+    // unapply:配置文件被删除(只有我们的条目)
+    const unapply = await cli('project', 'unapply', 'mcpproj');
+    expect(unapply.code).toBe(0);
+    await expect(fs.lstat(path.join(projectDir, '.mcp.json'))).rejects.toThrow();
+    await expect(fs.lstat(path.join(projectDir, '.codex', 'config.toml'))).rejects.toThrow();
+
+    // remove
+    const rm = await cli('mcp', 'remove', 'fs');
+    expect(rm.code).toBe(0);
+    const listAfter = JSON.parse((await cli('mcp', 'list', '--json')).stdout);
+    expect(listAfter.map((m: { name: string }) => m.name)).toEqual(['remote']);
   });
 });

@@ -55,6 +55,7 @@ ssw project switch api-server    # 激活项目 → 该项目的技能组合自�
 | 🗃️ **中央库,唯一事实来源** | 全部 skills 统一收在 `~/.skills-switch/library/`,项目组合只是引用,改一处处处生效 |
 | 🔄 **一键切换** | `switch` 一下整组换装:GUI 点项目名、CLI 敲一行,技能组合即刻写入各 agent 项目目录 |
 | 🔗 **symlink 物化** | 默认软链写入,库更新即时生效;失败自动降级 copy 并告警;同名冲突先移入快照再覆盖 |
+| 🔌 **MCP 服务也按项目管** | MCP server 集中在库里登记(stdio/http/sse),按项目绑定;apply 时**合并**写入各 agent 的项目级配置(`.mcp.json`、`.kimi-code/mcp.json`、`.cursor/mcp.json`、`.codex/config.toml`),保留你已有的其它配置,同样走快照可回滚 |
 | 📸 **快照可回滚** | 每次 apply 自动快照(每项目留 5 份),配错了一键还原 |
 | 🔍 **智能推荐 + 内置推荐库** | 识别项目技术栈推荐 GitHub 高 star skills;另内置 27 个精选仓库 / 8 大类,离线可浏览,一键安装;断网安静降级 |
 | 🖥️ **三种打开方式** | 浏览器 Web GUI、Electron 桌面 App、纯 CLI/终端面板——同一份核心,同一份状态 |
@@ -114,7 +115,7 @@ chmod +x "release/Skills SwitchTool-"*.AppImage
 
 ```bash
 skills    # 或 ssw —— ↑↓ 选项目,Enter 切换并 apply,
-          # a apply / u unapply / r 回滚 / s 查看技能库 / q 退出
+          # a apply / u unapply / r 回滚 / s 技能库 / m MCP 库 / q 退出
 ```
 
 非 TTY(管道、脚本)下裸跑则打印帮助。常用子命令:
@@ -126,6 +127,11 @@ ssw project create --name X --agents claude-code,kimi-code [--path /abs/path] [-
 ssw project switch <id|name>            # 设为当前项目并 apply(--path 缺省取当前目录)
 ssw project apply / unapply / rollback [id|name]
 ssw project bind <id|name> <skillId...> # 设置项目技能集(整体替换)
+ssw project bind-mcp <id|name> <mcpName...>   # 设置项目 MCP 服务集(整体替换)
+ssw mcp list
+ssw mcp add --name X --command npx [--args -y,pkg] [--env K=V,...]   # stdio 本地服务
+ssw mcp add --name X --url https://... [--transport sse] [--header K=V,...]  # 远端服务
+ssw mcp remove <name>                        # 删 server 并解除各项目绑定
 ssw skill list
 ssw skill add --github <owner/repo 或 URL> [--subdir skills]   # 合集仓库用 --subdir 指定扫描根
 ssw skill add --local /path/to/skill
@@ -147,23 +153,7 @@ ssw recommend [--path /abs/path] [--keywords a,b,c]            # 按技术栈智
 npm run dist:cli     # 产出 release/cli/ssw.mjs(esbuild 打包,零依赖,Node ≥ 18)
 ```
 
-把 `ssw.mjs` 拷到任意服务器:
-
-```bash
-chmod +x ssw.mjs
-./ssw.mjs agents                       # 或 node ssw.mjs agents
-```
-
-典型服务器工作流:
-
-```bash
-export SSW_HOME=/data/skills-switch    # 数据目录(可选,默认 ~/.skills-switch)
-./ssw.mjs skill init --name deploy-notes --desc "部署笔记规范"
-./ssw.mjs project create --name api --path /srv/api --agents claude-code --mode symlink
-./ssw.mjs project bind api local:deploy-notes
-./ssw.mjs project switch api           # 激活并写入 /srv/api/.claude/skills/
-./ssw.mjs recommend --path /srv/api --keywords api,express --json
-```
+把 `ssw.mjs` 拷到任意服务器即可使用(`./ssw.mjs agents` 或 `node ssw.mjs agents`)。需要配置的只有一项:数据目录默认 `~/.skills-switch/`,可用 `SSW_HOME` 覆盖,如 `export SSW_HOME=/data/skills-switch`。
 
 ### 多平台与注意事项
 

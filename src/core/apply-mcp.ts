@@ -197,16 +197,18 @@ export async function applyProjectMcps(
       if (file === null) {
         warnings.push(`${target} 的 JSON 已损坏,原文件已备份进快照,重写为仅含本项目 MCP 条目`);
       }
-      const base: JsonMcpFile = file ?? { mcpServers: {} };
+      // 注意:必须先算好 before 再改 merged——合并是原地改 mcpServers,事后比较会恒等
+      const before = file !== null ? stableStringify(file) : null;
+      const merged: JsonMcpFile = file ?? { mcpServers: {} };
       for (const e of entries) {
-        base.mcpServers[e.name] = adapter.mcp.toServerConfig(e);
+        merged.mcpServers[e.name] = adapter.mcp.toServerConfig(e);
       }
-      if (existing !== null && file !== null && stableStringify(file) === stableStringify(base)) {
+      if (existing !== null && before !== null && before === stableStringify(merged)) {
         continue; // 内容一致,幂等跳过
       }
       if (existing !== null) await moveConflictIntoSnapshot(snap, agentId, target);
       await fs.mkdir(path.dirname(target), { recursive: true });
-      await fs.writeFile(target, JSON.stringify(base, null, 2) + '\n', 'utf8');
+      await fs.writeFile(target, JSON.stringify(merged, null, 2) + '\n', 'utf8');
       if (existing === null) recordCreated(snap, agentId, target);
     } else {
       // codex config.toml:块级文本合并

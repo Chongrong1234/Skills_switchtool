@@ -18,6 +18,7 @@ export interface AgentAdapter {
   displayName: string;
   detect(): boolean;             // 本机是否装了该 agent
   projectSkillsDir(projectPath: string): string;  // 项目级 skills 目录
+  userSkillsDir(): string;       // 用户级(全局)skills 目录,全局共享 apply 的目标
   capabilities: { hooks: boolean; allowedTools: boolean };
   mcp?: McpSupport;
   validate?(skill: SkillEntry): string[];          // 返回不兼容告警

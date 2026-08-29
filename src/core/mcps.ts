@@ -55,7 +55,8 @@ export async function upsertMcp(input: {
   headers?: Record<string, string>;
 }): Promise<McpEntry> {
   assertValidMcpName(input.name);
-  const transport = input.transport ?? (input.url ? 'http' : 'stdio');
+  // 显式 transport 优先;否则 command → stdio,url → http(command 与 url 同现时按 stdio,本地优先)
+  const transport = input.transport ?? (input.command ? 'stdio' : 'http');
   if (transport === 'stdio') {
     if (!input.command) throw new McpError('stdio 类型必须提供 command');
   } else if (!input.url) {

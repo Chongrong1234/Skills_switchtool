@@ -4,13 +4,17 @@ import path from 'node:path';
 import type { McpEntry } from '../core/types.js';
 import type { AgentAdapter, McpSupport } from './types.js';
 
-/** 各 agent 的用户级配置目录名(detect 依据)与项目级 skills 相对目录(分段,避免 Windows 混合分隔符) */
+/**
+ * 各 agent 的用户级配置目录名(detect 依据)与项目级 skills 相对目录(分段,避免 Windows 混合分隔符)。
+ * homeDir 允许多段(如 '.codeium/windsurf'),用户级 skills 目录统一推导为 ~/<homeDir>/skills。
+ */
 interface AgentSpec {
   id: string;
   displayName: string;
-  homeDir: string;         // ~/.xxx
+  homeDir: string;         // ~/.xxx(可多段,如 windsurf 的 .codeium/windsurf)
   skillsSubDir: string[];  // 项目内如 ['.claude', 'skills']
   capabilities: { hooks: boolean; allowedTools: boolean };
+  detect?(): boolean;      // 覆盖默认探测(通用目录类适配器没有"是否安装"可言,始终可用)
   mcp?: McpSupport;
 }
 
@@ -18,11 +22,12 @@ export function makeAdapter(spec: AgentSpec): AgentAdapter {
   return {
     id: spec.id,
     displayName: spec.displayName,
-    detect(): boolean {
-      return fs.existsSync(path.join(os.homedir(), spec.homeDir));
-    },
+    detect: spec.detect ?? (() => fs.existsSync(path.join(os.homedir(), spec.homeDir))),
     projectSkillsDir(projectPath: string): string {
       return path.join(projectPath, ...spec.skillsSubDir);
+    },
+    userSkillsDir(): string {
+      return path.join(os.homedir(), spec.homeDir, 'skills');
     },
     capabilities: spec.capabilities,
     mcp: spec.mcp,

@@ -27,6 +27,11 @@ export function mcpsFile(): string {
   return path.join(sswHome(), 'mcps.json');
 }
 
+/** 全局(用户级)共享应用档案,见 core/global.ts */
+export function globalFile(): string {
+  return path.join(sswHome(), 'global.json');
+}
+
 export function snapshotsDir(): string {
   return path.join(sswHome(), 'snapshots');
 }

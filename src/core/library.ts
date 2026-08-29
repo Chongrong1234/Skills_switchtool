@@ -9,6 +9,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { getAdapter } from '../adapters/index.js';
 import { libraryDir } from './paths.js';
 import { detachSkillFromProjects } from './projects.js';
 import { getSkill, readRegistry, upsertSkill, writeRegistry } from './registry.js';
@@ -372,4 +373,67 @@ ${description}
 
 export async function listSkills(): Promise<SkillEntry[]> {
   return readRegistry();
+}
+
+export interface AdoptResult {
+  adopted: SkillEntry[];                       // 新收养入库的条目
+  skipped: string[];                           // 已在库中(含我们 apply 出去的 symlink),跳过
+  invalid: { dir: string; reason: string }[];  // SKILL.md 缺失/非法的目录
+}
+
+/**
+ * adopt 收养:把 agent skills 目录里已有的 skill 复制进中央库(local 来源,uri 记录来源路径)。
+ * 方向与 apply 相反:适合把某个 agent 里攒下的 skills 收编进库,再分发给其它 agent/其它机器。
+ * 幂等:指向库内的 symlink(就是我们 apply 出去的)与库中同名条目跳过;非法目录记入 invalid 不中断。
+ */
+export async function adoptFromAgent(
+  agentId: string,
+  opts: { scope: 'user' | 'project'; projectPath?: string },
+): Promise<AdoptResult> {
+  const adapter = getAdapter(agentId);
+  if (!adapter) throw new LibraryError(`未知 agent: ${agentId}`);
+  let dir: string;
+  if (opts.scope === 'user') {
+    dir = adapter.userSkillsDir();
+  } else {
+    if (!opts.projectPath) throw new LibraryError('project 作用域必须提供 projectPath');
+    dir = adapter.projectSkillsDir(opts.projectPath);
+  }
+  const ents = await fs.readdir(dir, { withFileTypes: true }).catch(() => null);
+  if (!ents) throw new LibraryError(`目录不存在或不可读: ${dir}`);
+
+  const registry = await readRegistry();
+  const knownNames = new Set(registry.map((s) => s.name));
+  const libRoot = await fs.realpath(libraryDir()).catch(() => libraryDir());
+  const result: AdoptResult = { adopted: [], skipped: [], invalid: [] };
+
+  for (const ent of ents) {
+    if (ent.name.startsWith('.')) continue;
+    if (!ent.isDirectory() && !ent.isSymbolicLink()) continue;
+    const sub = path.join(dir, ent.name);
+    // 指向库内的 symlink:是我们 apply 出去的,等价于已在库中
+    if (ent.isSymbolicLink()) {
+      const real = await fs.realpath(sub).catch(() => '');
+      if (real && real.startsWith(libRoot + path.sep)) {
+        result.skipped.push(ent.name);
+        continue;
+      }
+    }
+    try {
+      const { name } = await validateSkillDir(sub);
+      if (knownNames.has(name)) {
+        result.skipped.push(name);
+        continue;
+      }
+      const entry = await installFromLocal(sub);
+      result.adopted.push(entry);
+      knownNames.add(name);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // installFromLocal 的"源目录已在库中"(绕过了上面 symlink 预判的写法,如 8.3 短名)按跳过处理
+      if (msg.includes('已在库中')) result.skipped.push(ent.name);
+      else result.invalid.push({ dir: sub, reason: msg });
+    }
+  }
+  return result;
 }

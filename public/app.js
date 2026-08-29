@@ -2,11 +2,12 @@
 
 // ---------- 全局状态 ----------
 const state = {
-  view: 'projects',        // 'projects' | 'skills' | 'catalog'
+  view: 'projects',        // 'projects' | 'skills' | 'mcps' | 'catalog'
   agents: [],              // [{id, displayName, detected, capabilities}]
   projects: [],
   activeProjectId: null,
   skills: [],
+  mcps: [],                // MCP server 中央注册表
   selectedProjectId: null, // 主区当前展示的项目
   catalog: null,           // 推荐库缓存 {categories, items},null = 未加载/已失效
   catalogCategory: '',     // 推荐库当前分类过滤('' = 全部)
@@ -68,15 +69,17 @@ function setTheme(t) {
 
 // ---------- 数据加载 ----------
 async function loadAll() {
-  const [agents, pdata, skills] = await Promise.all([
+  const [agents, pdata, skills, mcps] = await Promise.all([
     api('GET', '/api/agents'),
     api('GET', '/api/projects'),
     api('GET', '/api/skills'),
+    api('GET', '/api/mcps'),
   ]);
   state.agents = agents;
   state.projects = pdata.projects;
   state.activeProjectId = pdata.activeProjectId;
   state.skills = skills;
+  state.mcps = mcps;
   if (!state.selectedProjectId && state.projects.length) {
     state.selectedProjectId = state.activeProjectId || state.projects[0].id;
   }
@@ -91,6 +94,7 @@ function render() {
   renderSidebarProjects();
   if (state.view === 'projects') renderProjectDetail();
   else if (state.view === 'catalog') renderCatalog();
+  else if (state.view === 'mcps') renderMcpLibrary();
   else renderSkillLibrary();
 }
 
@@ -133,6 +137,7 @@ function renderProjectDetail() {
   }
   const isActive = p.id === state.activeProjectId;
   const projectSkills = state.skills.filter((s) => p.skills.includes(s.id));
+  const projectMcps = state.mcps.filter((m) => (p.mcps || []).includes(m.name));
 
   main.innerHTML = `
     <div class="main-title">
@@ -170,6 +175,23 @@ function renderProjectDetail() {
       </div>
     </div>
 
+    <div class="section">
+      <h3>MCP 服务集(${projectMcps.length})</h3>
+      <div class="panel">
+        ${projectMcps.length ? projectMcps.map((m) => `
+          <div class="skill-row">
+            <div>
+              <div class="sname">${esc(m.name)} <span class="tag">${esc(m.transport)}</span></div>
+              <div class="sdesc">${esc(m.transport === 'stdio' ? `${m.command} ${(m.args || []).join(' ')}` : m.url)}${m.description ? ` · ${esc(m.description)}` : ''}</div>
+            </div>
+            <button class="btn btn-sm btn-danger" data-remove-mcp="${esc(m.name)}">移除</button>
+          </div>`).join('') : '<div class="empty">尚未绑定 MCP 服务,点击下方按钮从库中添加</div>'}
+      </div>
+      <div class="toolbar">
+        <button class="btn" id="btn-add-mcp">+ 从库中添加</button>
+      </div>
+    </div>
+
     <div class="actions">
       ${isActive ? '' : '<button class="btn btn-primary" id="btn-switch">切换到此项目</button>'}
       <button class="btn btn-primary" id="btn-apply">应用配置</button>
@@ -199,12 +221,23 @@ function renderProjectDetail() {
       toast('已移除');
     })));
 
+  // 移除 MCP 绑定
+  main.querySelectorAll('[data-remove-mcp]').forEach((btn) =>
+    btn.addEventListener('click', () => run(async () => {
+      const name = btn.dataset.removeMcp;
+      await api('POST', `/api/projects/${p.id}/mcps`, { mcpNames: (p.mcps || []).filter((x) => x !== name) });
+      await loadAll();
+      render();
+      toast('已移除');
+    })));
+
+  document.getElementById('btn-add-mcp').addEventListener('click', () => openAddMcpModal(p));
   document.getElementById('btn-add-skill').addEventListener('click', () => openAddSkillModal(p));
   document.getElementById('btn-apply').addEventListener('click', () => run(async () => {
     const r = await api('POST', `/api/projects/${p.id}/apply`);
     await loadAll();
     render();
-    toast(`已应用 ${r.applied.length} 项${r.warnings.length ? `,${r.warnings.length} 条警告` : ''}`);
+    toast(`已应用 skills ${r.applied.length} 项、MCP ${(r.mcpApplied || []).length} 项${r.warnings.length ? `,${r.warnings.length} 条警告` : ''}`);
     r.warnings.forEach((w) => toast(w, 'err'));
   }));
   document.getElementById('btn-unapply').addEventListener('click', () => run(async () => {
@@ -297,6 +330,34 @@ function openAddSkillModal(project) {
       closeModal();
       render();
       toast('已添加到项目技能集');
+    })));
+}
+
+// ---------- 从库中添加 MCP ----------
+function openAddMcpModal(project) {
+  const available = state.mcps.filter((m) => !(project.mcps || []).includes(m.name));
+  const modal = openModal(`
+    <h2>从库中添加 MCP 服务 → ${esc(project.name)}</h2>
+    ${available.length ? `<div class="rec-list">
+      ${available.map((m) => `
+        <div class="rec-item">
+          <div class="rhead">
+            <span class="rname">${esc(m.name)} <span class="tag">${esc(m.transport)}</span></span>
+            <button class="btn btn-sm btn-primary" data-add="${esc(m.name)}">添加</button>
+          </div>
+          <div class="rdesc">${esc(m.transport === 'stdio' ? `${m.command} ${(m.args || []).join(' ')}` : m.url)}</div>
+        </div>`).join('')}
+    </div>` : '<div class="empty">库中没有更多可添加的 MCP 服务(可在「MCP 服务」页添加)</div>'}
+    <div class="modal-actions"><button class="btn" id="m-close">关闭</button></div>
+  `);
+  modal.querySelector('#m-close').addEventListener('click', closeModal);
+  modal.querySelectorAll('[data-add]').forEach((btn) =>
+    btn.addEventListener('click', () => run(async () => {
+      await api('POST', `/api/projects/${project.id}/mcps`, { mcpNames: [...(project.mcps || []), btn.dataset.add] });
+      await loadAll();
+      closeModal();
+      render();
+      toast('已添加到项目 MCP 服务集');
     })));
 }
 
@@ -588,6 +649,109 @@ function openImportModal() {
     btn.textContent = '已导入';
     toast(`导入完成:新装 ${r.installed.length},跳过 ${r.skipped.length},失败 ${r.failed.length}`,
       r.failed.length ? 'err' : 'ok');
+  }));
+}
+
+// ---------- MCP 服务库视图 ----------
+function renderMcpLibrary() {
+  const main = document.getElementById('main');
+  main.innerHTML = `
+    <div class="main-title">MCP 服务库</div>
+    <div class="main-sub">中央注册表共 ${state.mcps.length} 个 MCP server;绑定到项目后,apply 时写入各 agent 的项目级配置(.mcp.json / mcp.json / config.toml)</div>
+    <div class="toolbar">
+      <button class="btn btn-primary" id="mc-add">添加 MCP server</button>
+    </div>
+    <div class="skills-grid">
+      ${state.mcps.map((m) => `
+        <div class="skill-card">
+          <div class="sname">${esc(m.name)}</div>
+          <div class="sdesc">${esc(m.transport === 'stdio' ? `${m.command} ${(m.args || []).join(' ')}` : m.url)}</div>
+          ${m.description ? `<div class="sdesc">${esc(m.description)}</div>` : ''}
+          <div class="smeta"><span class="tag">${esc(m.transport)}</span></div>
+          <div><button class="btn btn-sm btn-danger" data-del-mcp="${esc(m.name)}">删除</button></div>
+        </div>`).join('') || '<div class="empty">库还是空的,点上面按钮添加</div>'}
+    </div>
+  `;
+  document.getElementById('mc-add').addEventListener('click', openAddMcpServerModal);
+  main.querySelectorAll('[data-del-mcp]').forEach((btn) =>
+    btn.addEventListener('click', () => run(async () => {
+      if (!confirm(`确定从库中删除「${btn.dataset.delMcp}」?(各项目的绑定会一并解除)`)) return;
+      await api('DELETE', `/api/mcps/${encodeURIComponent(btn.dataset.delMcp)}`);
+      await loadAll();
+      render();
+      toast('已删除');
+    })));
+}
+
+/** 添加 MCP server:stdio(本地命令)与 http/sse(远端)字段按类型切换 */
+function openAddMcpServerModal() {
+  const modal = openModal(`
+    <h2>添加 MCP server</h2>
+    <div class="form-row"><label>名称(字母/数字/下划线/连字符)</label>
+      <input type="text" id="mcp-name" placeholder="filesystem" /></div>
+    <div class="form-row"><label>描述(可选)</label>
+      <input type="text" id="mcp-desc" placeholder="这个服务做什么" /></div>
+    <div class="form-row"><label>传输类型</label>
+      <div class="radio-group">
+        <label><input type="radio" name="mcp-transport" value="stdio" checked /> stdio(本地命令)</label>
+        <label><input type="radio" name="mcp-transport" value="http" /> http(远端)</label>
+        <label><input type="radio" name="mcp-transport" value="sse" /> sse(远端,旧式)</label>
+      </div>
+    </div>
+    <div id="mcp-stdio-fields">
+      <div class="form-row"><label>启动命令</label>
+        <input type="text" id="mcp-command" placeholder="npx" /></div>
+      <div class="form-row"><label>参数(逗号分隔,可空)</label>
+        <input type="text" id="mcp-args" placeholder="-y,@modelcontextprotocol/server-filesystem,/tmp" /></div>
+      <div class="form-row"><label>环境变量(KEY=V 逗号分隔,可空)</label>
+        <input type="text" id="mcp-env" placeholder="API_KEY=xxx" /></div>
+    </div>
+    <div id="mcp-remote-fields" style="display:none">
+      <div class="form-row"><label>端点 URL</label>
+        <input type="text" id="mcp-url" placeholder="https://mcp.example.com/mcp" /></div>
+      <div class="form-row"><label>请求头(KEY=V 逗号分隔,可空)</label>
+        <input type="text" id="mcp-headers" placeholder="Authorization=Bearer xxx" /></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" id="m-cancel">取消</button>
+      <button class="btn btn-primary" id="m-ok">添加</button>
+    </div>
+  `);
+  // 按传输类型切换字段区
+  modal.querySelectorAll('input[name="mcp-transport"]').forEach((r) =>
+    r.addEventListener('change', () => {
+      const stdio = modal.querySelector('input[name="mcp-transport"]:checked').value === 'stdio';
+      modal.querySelector('#mcp-stdio-fields').style.display = stdio ? '' : 'none';
+      modal.querySelector('#mcp-remote-fields').style.display = stdio ? 'none' : '';
+    }));
+  modal.querySelector('#m-cancel').addEventListener('click', closeModal);
+  modal.querySelector('#m-ok').addEventListener('click', () => run(async () => {
+    const name = modal.querySelector('#mcp-name').value.trim();
+    const description = modal.querySelector('#mcp-desc').value.trim();
+    const transport = modal.querySelector('input[name="mcp-transport"]:checked').value;
+    if (!name) return toast('名称必填', 'err');
+    const body = { name, transport };
+    if (description) body.description = description;
+    if (transport === 'stdio') {
+      const command = modal.querySelector('#mcp-command').value.trim();
+      if (!command) return toast('stdio 类型必填启动命令', 'err');
+      body.command = command;
+      const args = modal.querySelector('#mcp-args').value.trim();
+      if (args) body.args = args.split(',').map((s) => s.trim()).filter(Boolean);
+      const env = modal.querySelector('#mcp-env').value.trim();
+      if (env) body.env = Object.fromEntries(env.split(',').map((p) => p.split(/=(.*)/).slice(0, 2)));
+    } else {
+      const url = modal.querySelector('#mcp-url').value.trim();
+      if (!url) return toast('远端类型必填 URL', 'err');
+      body.url = url;
+      const headers = modal.querySelector('#mcp-headers').value.trim();
+      if (headers) body.headers = Object.fromEntries(headers.split(',').map((p) => p.split(/=(.*)/).slice(0, 2)));
+    }
+    await api('POST', '/api/mcps', body);
+    await loadAll();
+    closeModal();
+    render();
+    toast(`已添加 MCP server: ${name}`);
   }));
 }
 

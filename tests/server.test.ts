@@ -86,4 +86,33 @@ describe('server 校验(与 CLI 行为对齐)', () => {
     expect(bind.status).toBe(200);
     expect(bind.data.skills).toEqual([init.data.id]);
   });
+
+  it('MCP 端点:add/list/bind/delete 全流程 + 校验', async () => {
+    // 缺 name → 400;stdio 缺 command → 400(McpError 映射)
+    expect((await api('POST', '/api/mcps', { command: 'npx' })).status).toBe(400);
+    const bad = await api('POST', '/api/mcps', { name: 'x', transport: 'stdio' });
+    expect(bad.status).toBe(400);
+    expect(bad.data.error).toContain('command');
+
+    const add = await api('POST', '/api/mcps', { name: 'fs', command: 'npx', args: ['-y', 'pkg'] });
+    expect(add.status).toBe(201);
+    expect(add.data.transport).toBe('stdio');
+    expect((await api('GET', '/api/mcps')).data).toHaveLength(1);
+
+    const c = await api('POST', '/api/projects', { name: 'x', path: '/tmp/x', agents: ['claude-code'] });
+    // 绑定不存在的 server → 400
+    const badBind = await api('POST', `/api/projects/${c.data.id}/mcps`, { mcpNames: ['ghost'] });
+    expect(badBind.status).toBe(400);
+    expect(badBind.data.error).toContain('MCP server');
+    // 正常绑定
+    const bind = await api('POST', `/api/projects/${c.data.id}/mcps`, { mcpNames: ['fs'] });
+    expect(bind.status).toBe(200);
+    expect(bind.data.mcps).toEqual(['fs']);
+    // PATCH mcps 同样校验
+    expect((await api('PATCH', `/api/projects/${c.data.id}`, { mcps: ['ghost'] })).status).toBe(400);
+    // 删除 server 后项目绑定被解除
+    expect((await api('DELETE', '/api/mcps/fs')).status).toBe(200);
+    expect((await api('GET', `/api/projects/${c.data.id}`)).data.mcps).toEqual([]);
+    expect((await api('DELETE', '/api/mcps/fs')).status).toBe(404);
+  });
 });
