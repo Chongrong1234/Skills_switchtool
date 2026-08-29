@@ -47,9 +47,9 @@ jobs:
         run: npm test
 
       - name: 构建并打包(electron-builder)
-        run: npx electron-builder ${{ matrix.target }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 供 electron-builder 识别仓库;不发布
+        # --publish never:产物只落本地 release/,统一由下面的 action-gh-release 上传;
+        # 否则 tag 构建时 electron-builder 会用 GH_TOKEN 自行发布,产生第二个草稿 Release
+        run: npx electron-builder ${{ matrix.target }} --publish never
 
       - name: 上传产物到 Release
         uses: softprops/action-gh-release@v2
