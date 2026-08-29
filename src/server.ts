@@ -22,11 +22,13 @@ import {
   getProject,
   listProjects,
   setActiveProject,
+  setProjectMcps,
   setProjectSkills,
   updateProject,
 } from './core/projects.js';
 import { CATALOG_CATEGORIES, listCatalogWithInstalled } from './core/catalog.js';
 import { exportSkillsCode, importSkillsCode, parseSkillsCode } from './core/migrate.js';
+import { listMcps, McpError, removeMcp, upsertMcp } from './core/mcps.js';
 import { recommendForProject } from './core/recommend.js';
 import { readRegistry } from './core/registry.js';
 import { rollback } from './core/snapshot.js';
@@ -67,6 +69,14 @@ async function validateSkillIds(skillIds: unknown): Promise<string | null> {
   return missing.length ? `库中不存在这些 skill: ${missing.join(', ')}` : null;
 }
 
+/** 校验 mcpNames 数组且都存在于 MCP 注册表中(与 CLI project bind-mcp 行为一致) */
+async function validateMcpNames(mcpNames: unknown): Promise<string | null> {
+  if (!Array.isArray(mcpNames)) return 'mcpNames 必须是数组';
+  const mcps = await listMcps();
+  const missing = mcpNames.filter((n) => !mcps.some((m) => m.name === n));
+  return missing.length ? `库中不存在这些 MCP server: ${missing.join(', ')}` : null;
+}
+
 export function createApp(): express.Express {
   const app = express();
   app.use(express.json());
@@ -83,6 +93,11 @@ export function createApp(): express.Express {
     );
   });
 
+  // ---- meta:服务进程信息(cwd 供前端预填/缺省项目路径)----
+  app.get('/api/meta', (_req, res) => {
+    res.json({ cwd: process.cwd() });
+  });
+
   // ---- projects ----
   app.get('/api/projects', h(async (_req, res) => {
     res.json(await listProjects());
@@ -90,7 +105,7 @@ export function createApp(): express.Express {
 
   app.post('/api/projects', h(async (req, res) => {
     const { name, path: p, agents, applyMode } = req.body ?? {};
-    if (!name || !p) return void res.status(400).json({ error: 'name 与 path 必填' });
+    if (!name) return void res.status(400).json({ error: 'name 必填' });
     if (applyMode && !['symlink', 'copy'].includes(applyMode)) {
       return void res.status(400).json({ error: 'applyMode 只能是 symlink 或 copy' });
     }
@@ -98,7 +113,8 @@ export function createApp(): express.Express {
       const err = validateAgents(agents);
       if (err) return void res.status(400).json({ error: err });
     }
-    const project = await createProject({ name, path: p, agents: agents ?? [], applyMode: applyMode ?? 'symlink' });
+    // path 缺省取服务进程当前工作目录(与 CLI --path 缺省一致;服务通常就在项目根启动)
+    const project = await createProject({ name, path: p || process.cwd(), agents: agents ?? [], applyMode: applyMode ?? 'symlink' });
     res.status(201).json(project);
   }));
 
@@ -109,7 +125,7 @@ export function createApp(): express.Express {
   }));
 
   app.patch('/api/projects/:id', h(async (req, res) => {
-    const { name, agents, skills, applyMode } = req.body ?? {};
+    const { name, agents, skills, mcps, applyMode } = req.body ?? {};
     if (applyMode && !['symlink', 'copy'].includes(applyMode)) {
       return void res.status(400).json({ error: 'applyMode 只能是 symlink 或 copy' });
     }
@@ -121,10 +137,15 @@ export function createApp(): express.Express {
       const err = await validateSkillIds(skills);
       if (err) return void res.status(400).json({ error: err });
     }
+    if (mcps !== undefined) {
+      const err = await validateMcpNames(mcps);
+      if (err) return void res.status(400).json({ error: err });
+    }
     const patch: Record<string, unknown> = {};
     if (name !== undefined) patch.name = name;
     if (agents !== undefined) patch.agents = agents;
     if (skills !== undefined) patch.skills = skills;
+    if (mcps !== undefined) patch.mcps = mcps;
     if (applyMode !== undefined) patch.applyMode = applyMode;
     const project = await updateProject(req.params.id, patch);
     if (!project) return void res.status(404).json({ error: '项目不存在' });
@@ -168,6 +189,34 @@ export function createApp(): express.Express {
     const project = await setProjectSkills(req.params.id, skillIds);
     if (!project) return void res.status(404).json({ error: '项目不存在' });
     res.json(project);
+  }));
+
+  // 绑定/更新项目 MCP 服务集
+  app.post('/api/projects/:id/mcps', h(async (req, res) => {
+    const { mcpNames } = req.body ?? {};
+    const err = await validateMcpNames(mcpNames);
+    if (err) return void res.status(400).json({ error: err });
+    const project = await setProjectMcps(req.params.id, mcpNames);
+    if (!project) return void res.status(404).json({ error: '项目不存在' });
+    res.json(project);
+  }));
+
+  // ---- MCP server 注册表 ----
+  app.get('/api/mcps', h(async (_req, res) => {
+    res.json(await listMcps());
+  }));
+
+  app.post('/api/mcps', h(async (req, res) => {
+    const { name, description, transport, command, args, env, cwd, url, headers } = req.body ?? {};
+    if (!name) return void res.status(400).json({ error: 'name 必填' });
+    const entry = await upsertMcp({ name, description, transport, command, args, env, cwd, url, headers });
+    res.status(201).json(entry);
+  }));
+
+  app.delete('/api/mcps/:name', h(async (req, res) => {
+    const ok = await removeMcp(req.params.name);
+    if (!ok) return void res.status(404).json({ error: 'MCP server 不存在' });
+    res.json({ ok: true });
   }));
 
   // ---- skills ----
@@ -241,8 +290,9 @@ export function createApp(): express.Express {
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
     const msg =
       err instanceof LibraryError ? err.message :
+      err instanceof McpError ? err.message :
       err instanceof Error ? err.message : String(err);
-    const status = err instanceof LibraryError ? 400 : 500;
+    const status = err instanceof LibraryError || err instanceof McpError ? 400 : 500;
     res.status(status).json({ error: msg });
   });
 

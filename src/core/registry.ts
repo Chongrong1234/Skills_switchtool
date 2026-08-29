@@ -11,12 +11,35 @@ interface RegistryData {
   skills: SkillEntry[];
 }
 
+/** rename 失败是否值得退避重试(Windows 杀软/索引器瞬时持锁导致的 EPERM 等) */
+function isRetryableRenameError(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException)?.code;
+  return code === 'EPERM' || code === 'EACCES' || code === 'EBUSY';
+}
+
+/**
+ * rename 带退避重试:Windows 上杀毒软件/索引器会瞬时持有文件句柄,
+ * 导致 tmp+rename 原子写的最后一步偶发 EPERM,短暂退避后重试即可恢复。
+ * 也供 snapshot.ts 的移动操作复用。
+ */
+export async function renameWithRetry(src: string, dest: string, retries = 3): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await fs.rename(src, dest);
+      return;
+    } catch (err) {
+      if (attempt >= retries - 1 || !isRetryableRenameError(err)) throw err;
+      await new Promise((r) => setTimeout(r, 50 * (attempt + 1)));
+    }
+  }
+}
+
 /** 原子写:先写临时文件再 rename,避免半截写入 */
 export async function atomicWriteJson(file: string, data: unknown): Promise<void> {
   await fs.mkdir(path.dirname(file), { recursive: true });
   const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
   await fs.writeFile(tmp, JSON.stringify(data, null, 2), 'utf8');
-  await fs.rename(tmp, file);
+  await renameWithRetry(tmp, file);
 }
 
 /** 容错读取 JSON 文件;不存在或损坏时返回 fallback */

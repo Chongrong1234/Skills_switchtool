@@ -199,4 +199,19 @@ describe('apply', () => {
     }
     expect((await listSnapshots(project.id)).length).toBeLessThanOrEqual(5);
   });
+
+  it('copy 模式重复 apply 幂等:不重复物化、不新增快照', async () => {
+    const skill = await initSkill('copy-idem', '复制幂等');
+    const project = await createProject({
+      name: 'demo',
+      path: projectPath,
+      agents: ['claude-code'],
+      applyMode: 'copy',
+    });
+    await setProjectSkills(project.id, [skill.id]);
+    await applyProject(project.id);
+    const second = await applyProject(project.id);
+    expect(second.applied).toHaveLength(0); // 已是我们复制的副本,跳过
+    expect(await listSnapshots(project.id)).toHaveLength(1); // 没有多余快照
+  });
 });

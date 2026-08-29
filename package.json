@@ -2,15 +2,37 @@
   "name": "skills-switchtool",
   "version": "0.1.0",
   "description": "项目中心化的 Agent Skills 管理工具(Web GUI / Electron 桌面 App / CLI)",
+  "keywords": [
+    "agent-skills",
+    "claude-code",
+    "kimi-code",
+    "cursor",
+    "codex",
+    "skills-manager"
+  ],
+  "license": "MIT",
+  "author": "Chongrong1234",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Chongrong1234/Skills_switchtool.git"
+  },
+  "bugs": "https://github.com/Chongrong1234/Skills_switchtool/issues",
+  "homepage": "https://github.com/Chongrong1234/Skills_switchtool#readme",
   "type": "module",
   "main": "electron/main.mjs",
   "bin": {
     "ssw": "dist/cli.js",
     "skills": "dist/cli.js"
   },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "dev": "tsx src/index.ts",
-    "build": "tsc",
+    "build": "node -e \"fs.rmSync('dist',{recursive:true,force:true})\" && tsc",
     "start": "node dist/index.js",
     "test": "vitest run",
     "app": "npm run build && electron .",

@@ -45,6 +45,18 @@ describe('server 校验(与 CLI 行为对齐)', () => {
     expect(r.data.error).toContain('未知 agent');
   });
 
+  it('创建项目省略 path 时取服务进程 cwd;/api/meta 暴露 cwd', async () => {
+    const meta = await api('GET', '/api/meta');
+    expect(meta.status).toBe(200);
+    expect(meta.data.cwd).toBe(process.cwd());
+    const c = await api('POST', '/api/projects', { name: 'x', agents: [] });
+    expect(c.status).toBe(201);
+    expect(c.data.path).toBe(process.cwd());
+    // name 仍是必填
+    const bad = await api('POST', '/api/projects', { path: '/tmp/x' });
+    expect(bad.status).toBe(400);
+  });
+
   it('绑定不存在的 skillId 返回 400', async () => {
     const c = await api('POST', '/api/projects', { name: 'x', path: '/tmp/x', agents: [] });
     expect(c.status).toBe(201);

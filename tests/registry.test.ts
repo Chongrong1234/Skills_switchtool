@@ -4,7 +4,7 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registryFile } from '../src/core/paths.js';
 import { getSkill, readRegistry, removeSkill, upsertSkill, writeRegistry } from '../src/core/registry.js';
 import type { SkillEntry } from '../src/core/types.js';
@@ -79,5 +79,24 @@ describe('registry', () => {
     await fs.mkdir(tmp, { recursive: true });
     await fs.writeFile(registryFile(), '[1,2,3]', 'utf8');
     expect(await readRegistry()).toEqual([]);
+  });
+
+  it('rename 瞬时 EPERM(如 Windows 杀软持锁)退避重试后写入成功', async () => {
+    const origRename = fs.rename;
+    let calls = 0;
+    const spy = vi.spyOn(fs, 'rename').mockImplementation(async (src, dst) => {
+      calls++;
+      if (calls === 1) {
+        throw Object.assign(new Error('operation not permitted'), { code: 'EPERM' });
+      }
+      return origRename(src, dst);
+    });
+    try {
+      await writeRegistry([makeEntry('local:a')]);
+      expect((await readRegistry()).map((s) => s.id)).toEqual(['local:a']);
+      expect(calls).toBeGreaterThanOrEqual(2); // 第一次失败,重试成功
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

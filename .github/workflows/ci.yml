@@ -1,0 +1,35 @@
+# 持续集成:push/PR 触发,三平台 × 多 Node 版本跑 编译+测试,
+# 保证 Linux/Windows/macOS 与 Node 18/20/22 下行为一致。
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node-version: [18, 20, 22]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - name: 安装依赖(跳过 Electron 二进制下载,测试用不到)
+        run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+
+      - name: 编译 TypeScript
+        run: npm run build
+
+      - name: 运行测试
+        run: npm test

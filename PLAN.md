@@ -1,5 +1,7 @@
 # Skills SwitchTool 项目计划书
 
+> ⚠️ **历史文档,仅供溯源**:这是项目早期的计划书,其中 Ink TUI、zod、Tauri、Octokit、`<项目根>/.skills-switch.json` 清单等内容**均未落地**。当前实际架构与行为以 [AGENTS.md](AGENTS.md) 与 [README.md](README.md) 为准。
+
 > **目标(一句话):** 一个"项目中心化"的 Agent Skills 管理工具——用户创建项目、一键配置技能集、一键切换项目，无需挨个 agent 重复配置。
 
 **架构:** 单一核心引擎(TypeScript 库）承担所有状态与文件操作，CLI/TUI 与后续 GUI 都只是它的前端。中央库存放全部 skills（唯一事实来源），项目档案记录"项目 ↔ 技能集 ↔ 目标 agents"绑定，切换项目 = 把对应技能集应用到各 agent 的项目级配置目录。

@@ -23,20 +23,23 @@ import {
   getProject,
   listProjects,
   setActiveProject,
+  setProjectMcps,
   setProjectSkills,
 } from './core/projects.js';
+import { listMcps, removeMcp, upsertMcp } from './core/mcps.js';
 import { recommendForProject } from './core/recommend.js';
 import { CATALOG, CATALOG_CATEGORIES, listCatalogWithInstalled } from './core/catalog.js';
 import { exportSkillsCode, importSkillsCode, parseSkillsCode } from './core/migrate.js';
 import { rollback } from './core/snapshot.js';
 import type { Project } from './core/types.js';
 import { readRegistry } from './core/registry.js';
+import { VERSION } from './version.js';
 
 const program = new Command();
 program
   .name('ssw')
   .description('Skills SwitchTool —— 项目中心化的 Agent Skills 管理工具(CLI)')
-  .version('0.1.0')
+  .version(VERSION)
   .option('--json', '以 JSON 格式输出');
 
 /** 叶子命令统一挂 --json(全局选项在子命令后不注册会报 unknown option) */
@@ -127,7 +130,7 @@ leaf(projectCmd.command('list').description('项目列表,* 为当前激活项')
       return data.projects
         .map((p) => {
           const mark = p.id === data.activeProjectId ? '*' : ' ';
-          return `${mark} ${p.id.slice(0, 8)}  ${p.name.padEnd(16)} ${p.path}  [${p.agents.join(', ')}]  skills: ${p.skills.length}`;
+          return `${mark} ${p.id.slice(0, 8)}  ${p.name.padEnd(16)} ${p.path}  [${p.agents.join(', ')}]  skills: ${p.skills.length}  mcps: ${p.mcps.length}`;
         })
         .join('\n');
     });
@@ -139,11 +142,11 @@ leaf(
     .command('create')
     .description('创建项目')
     .requiredOption('--name <name>', '项目名称')
-    .requiredOption('--path <path>', '项目根目录(绝对路径)')
+    .option('--path <path>', '项目根目录(缺省取当前工作目录)')
     .requiredOption('--agents <ids>', '目标 agents,逗号分隔(如 claude-code,kimi-code)')
     .option('--mode <mode>', 'apply 模式: symlink|copy', 'symlink'),
 ).action(
-  wrap(async (cmd, opts: { name: string; path: string; agents: string; mode: string }) => {
+  wrap(async (cmd, opts: { name: string; path?: string; agents: string; mode: string }) => {
     if (!['symlink', 'copy'].includes(opts.mode)) {
       throw new Error('--mode 只能是 symlink 或 copy');
     }
@@ -151,7 +154,8 @@ leaf(
     for (const id of agentIds) {
       if (!getAdapter(id)) throw new Error(`未知 agent: ${id}(可用: ${adapters.map((a) => a.id).join(', ')})`);
     }
-    const p = await createProject({ name: opts.name, path: opts.path, agents: agentIds, applyMode: opts.mode as 'symlink' | 'copy' });
+    // --path 缺省取当前工作目录:在项目根里跑命令时无需手填
+    const p = await createProject({ name: opts.name, path: path.resolve(opts.path ?? '.'), agents: agentIds, applyMode: opts.mode as 'symlink' | 'copy' });
     out(cmd, p, () => `已创建项目 ${p.name}(${p.id})`);
   }),
 );
@@ -161,8 +165,9 @@ leaf(projectCmd.command('show').description('项目详情').argument('<id|name>'
     const p = await findProject(ref);
     const registry = await readRegistry();
     const skills = registry.filter((s) => p.skills.includes(s.id));
+    const mcps = (await listMcps()).filter((m) => p.mcps.includes(m.name));
     const { activeProjectId } = await listProjects();
-    const detail = { ...p, active: p.id === activeProjectId, skillDetails: skills };
+    const detail = { ...p, active: p.id === activeProjectId, skillDetails: skills, mcpDetails: mcps };
     out(cmd, detail, () => {
       const lines = [
         `项目: ${p.name} (${p.id})${p.id === activeProjectId ? '  [当前激活]' : ''}`,
@@ -172,6 +177,8 @@ leaf(projectCmd.command('show').description('项目详情').argument('<id|name>'
         `上次 apply: ${fmtTime(p.lastAppliedAt)}`,
         `技能集(${skills.length}):`,
         ...skills.map((s) => `  ${s.id.padEnd(24)} ${s.name} - ${s.description}`),
+        `MCP 服务集(${mcps.length}):`,
+        ...mcps.map((m) => `  ${m.name.padEnd(24)} [${m.transport}]  ${m.transport === 'stdio' ? `${m.command} ${(m.args ?? []).join(' ')}` : m.url}`),
       ];
       return lines.join('\n');
     });
@@ -184,8 +191,9 @@ leaf(projectCmd.command('switch').description('设为当前项目并 apply').arg
     await setActiveProject(p.id);
     const result = await applyProject(p.id);
     out(cmd, { activeProjectId: p.id, ...result }, () => {
-      const lines = [`已切换到「${p.name}」并应用配置(${result.applied.length} 项)`];
+      const lines = [`已切换到「${p.name}」并应用配置(skills ${result.applied.length} 项,MCP ${result.mcpApplied.length} 项)`];
       for (const a of result.applied) lines.push(`  [${a.agentId}] ${a.skillName} -> ${a.target} (${a.mode})`);
+      for (const m of result.mcpApplied) lines.push(`  [${m.agentId}] MCP ${m.mcpName} -> ${m.target}`);
       for (const w of result.warnings) lines.push(`  警告: ${w}`);
       return lines.join('\n');
     });
@@ -203,8 +211,9 @@ for (const [name, desc] of [
       if (name === 'apply') {
         const result = await applyProject(p.id);
         out(cmd, result, () => {
-          const lines = [`已应用 ${result.applied.length} 项(项目「${p.name}」)`];
+          const lines = [`已应用 skills ${result.applied.length} 项、MCP ${result.mcpApplied.length} 项(项目「${p.name}」)`];
           for (const a of result.applied) lines.push(`  [${a.agentId}] ${a.skillName} -> ${a.target} (${a.mode})`);
+          for (const m of result.mcpApplied) lines.push(`  [${m.agentId}] MCP ${m.mcpName} -> ${m.target}`);
           for (const w of result.warnings) lines.push(`  警告: ${w}`);
           return lines.join('\n');
         });
@@ -242,6 +251,95 @@ leaf(
     if (missing.length) throw new Error(`库中不存在这些 skill: ${missing.join(', ')}`);
     await setProjectSkills(p.id, skillIds);
     out(cmd, { projectId: p.id, skills: skillIds }, () => `项目「${p.name}」技能集已更新(${skillIds.length} 个)`);
+  }),
+);
+
+leaf(
+  projectCmd
+    .command('bind-mcp')
+    .description('设置项目 MCP 服务集(整体替换)')
+    .argument('<id|name>', '项目 id 或名称')
+    .argument('<mcpName...>', '一个或多个 MCP server 名'),
+).action(
+  wrap(async (cmd, ref: string, mcpNames: string[]) => {
+    const p = await findProject(ref);
+    const mcps = await listMcps();
+    const missing = mcpNames.filter((n) => !mcps.some((m) => m.name === n));
+    if (missing.length) throw new Error(`库中不存在这些 MCP server: ${missing.join(', ')}`);
+    await setProjectMcps(p.id, mcpNames);
+    out(cmd, { projectId: p.id, mcps: mcpNames }, () => `项目「${p.name}」MCP 服务集已更新(${mcpNames.length} 个)`);
+  }),
+);
+
+// ---------- mcp ----------
+const mcpCmd = program.command('mcp').description('中央库 MCP server 管理');
+
+leaf(mcpCmd.command('list').description('列出库中全部 MCP server')).action(
+  wrap(async (cmd) => {
+    const mcps = await listMcps();
+    out(cmd, mcps, () => {
+      if (!mcps.length) return '(库为空,用 ssw mcp add 添加)';
+      return mcps
+        .map((m) => `${m.name.padEnd(20)} [${m.transport}]  ${m.transport === 'stdio' ? `${m.command} ${(m.args ?? []).join(' ')}` : m.url}${m.description ? `  — ${m.description}` : ''}`)
+        .join('\n');
+    });
+  }),
+);
+
+leaf(
+  mcpCmd
+    .command('add')
+    .description('添加/更新 MCP server(--command 与 --url 二选一)')
+    .requiredOption('--name <name>', 'server 名(字母/数字/下划线/连字符)')
+    .option('--command <cmd>', 'stdio:启动命令(如 npx)')
+    .option('--args <args>', 'stdio:参数,逗号分隔(如 -y,@mcp/server)')
+    .option('--env <pairs>', 'stdio:环境变量,逗号分隔 KEY=V')
+    .option('--cwd <dir>', 'stdio:工作目录(仅部分 agent 支持)')
+    .option('--url <url>', 'http/sse:远端端点')
+    .option('--transport <type>', '传输类型: stdio|http|sse(缺省按 --command/--url 推断)')
+    .option('--header <pairs>', 'http/sse:静态请求头,逗号分隔 KEY=V')
+    .option('--desc <text>', '描述'),
+).action(
+  wrap(async (cmd, opts: {
+    name: string; command?: string; args?: string; env?: string; cwd?: string;
+    url?: string; transport?: string; header?: string; desc?: string;
+  }) => {
+    // 解析 KEY=V 逗号串(值里允许再有 =,只按第一个 = 切)
+    const parsePairs = (s: string | undefined, flag: string): Record<string, string> | undefined => {
+      if (!s) return undefined;
+      const out: Record<string, string> = {};
+      for (const pair of s.split(',')) {
+        const eq = pair.indexOf('=');
+        if (eq <= 0) throw new Error(`${flag} 格式错误: "${pair}"(应为 KEY=V)`);
+        out[pair.slice(0, eq).trim()] = pair.slice(eq + 1);
+      }
+      return out;
+    };
+    if (opts.transport && !['stdio', 'http', 'sse'].includes(opts.transport)) {
+      throw new Error('--transport 只能是 stdio|http|sse');
+    }
+    if (opts.command && opts.url) throw new Error('--command 与 --url 只能二选一');
+    if (!opts.command && !opts.url) throw new Error('必须指定 --command(stdio)或 --url(http/sse)之一');
+    const entry = await upsertMcp({
+      name: opts.name,
+      description: opts.desc,
+      transport: opts.transport as 'stdio' | 'http' | 'sse' | undefined,
+      command: opts.command,
+      args: opts.args ? opts.args.split(',').filter(Boolean) : undefined,
+      env: parsePairs(opts.env, '--env'),
+      cwd: opts.cwd,
+      url: opts.url,
+      headers: parsePairs(opts.header, '--header'),
+    });
+    out(cmd, entry, () => `已添加 MCP server: ${entry.name}(${entry.transport})`);
+  }),
+);
+
+leaf(mcpCmd.command('remove').description('从库中删除 MCP server(同时解除各项目的绑定)').argument('<name>', 'server 名')).action(
+  wrap(async (cmd, name: string) => {
+    const ok = await removeMcp(name);
+    if (!ok) throw new Error(`MCP server 不存在: ${name}`);
+    out(cmd, { removed: name }, () => `已删除 MCP server: ${name}`);
   }),
 );
 
@@ -362,11 +460,11 @@ leaf(
   program
     .command('recommend')
     .description('检测技术栈 + 关键词,输出 GitHub 高 star 推荐(按 star 降序)')
-    .requiredOption('--path <path>', '项目根目录(用于技术栈检测)')
+    .option('--path <path>', '项目根目录(缺省取当前工作目录,用于技术栈检测)')
     .option('--keywords <words>', '额外关键词,逗号分隔'),
 ).action(
-  wrap(async (cmd, opts: { path: string; keywords?: string }) => {
-    const abs = path.resolve(opts.path);
+  wrap(async (cmd, opts: { path?: string; keywords?: string }) => {
+    const abs = path.resolve(opts.path ?? '.');
     const keywords = (opts.keywords ?? '').split(',').map((s) => s.trim()).filter(Boolean);
     // 项目名参数兼作关键词来源:目录名 + 显式关键词(core 内部会再分词)
     const nameSeed = [path.basename(abs), ...keywords].join(' ');

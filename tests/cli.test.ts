@@ -24,9 +24,15 @@ let projectDir: string;
 
 /** 跑 CLI;出错也正常返回(exit code 断言用) */
 async function cli(...args: string[]): Promise<RunResult> {
+  return cliIn(undefined, ...args);
+}
+
+/** 同 cli,但可指定子进程工作目录(测 --path 缺省取 cwd 用) */
+async function cliIn(cwd: string | undefined, ...args: string[]): Promise<RunResult> {
   try {
     const { stdout, stderr } = await execFileP('node', [CLI, ...args], {
       env: { ...process.env, SSW_HOME: sswHome },
+      cwd,
     });
     return { stdout, stderr, code: 0 };
   } catch (err) {
@@ -37,7 +43,10 @@ async function cli(...args: string[]): Promise<RunResult> {
 
 beforeAll(async () => {
   // 确保 dist/cli.js 是最新的(不依赖外部先跑 build)
-  await execFileP('npm', ['run', 'build'], { cwd: path.resolve(__dirname, '..') });
+  // Windows 上 npm 是 npm.cmd;Node ≥18.20/20.12 起无 shell 直接 spawn .cmd 会抛 EINVAL
+  await execFileP(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'build'], {
+    cwd: path.resolve(__dirname, '..'),
+  });
 }, 120000);
 
 beforeEach(async () => {
@@ -143,9 +152,15 @@ describe('ssw CLI', () => {
   });
 
   it('缺必填参数时报错且退出码非零', async () => {
-    const r = await cli('project', 'create', '--name', 'only-name');
+    const r = await cli('project', 'create', '--path', '/tmp/x');
     expect(r.code).not.toBe(0);
-    expect(r.stderr).toContain('--path');
+    expect(r.stderr).toContain('--name');
+  });
+
+  it('project create 省略 --path 时取当前工作目录', async () => {
+    const r = await cliIn(projectDir, 'project', 'create', '--name', 'cwdproj', '--agents', 'claude-code', '--json');
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.stdout).path).toBe(await fs.realpath(projectDir));
   });
 
   it('agents 子命令列出适配器(--json)', async () => {
@@ -186,5 +201,12 @@ describe('ssw CLI', () => {
     const r = await cli();
     expect(r.code).toBe(0);
     expect(r.stdout).toContain('Usage: ssw');
+  });
+
+  it('--version 输出版本号,且与 package.json 一致(版本号单一来源)', async () => {
+    const r = await cli('--version');
+    expect(r.code).toBe(0);
+    const pkg = JSON.parse(await fs.readFile(path.resolve(__dirname, '..', 'package.json'), 'utf8'));
+    expect(r.stdout.trim()).toBe(pkg.version);
   });
 });

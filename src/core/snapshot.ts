@@ -4,6 +4,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { snapshotsDir } from './paths.js';
+import { renameWithRetry } from './registry.js';
 
 export interface SnapshotItem {
   agentId: string;
@@ -42,6 +43,20 @@ export function recordCreated(snap: SnapshotHandle, agentId: string, targetPath:
   snap.manifest.items.push({ agentId, targetPath, action: 'created' });
 }
 
+/**
+ * 移动文件/目录:优先 rename;跨设备(如项目在 D: 盘、SSW_HOME 在 C: 盘)
+ * rename 抛 EXDEV 时降级为 复制+删除,保证 Windows 多盘符场景可用。
+ */
+async function moveEntry(src: string, dest: string): Promise<void> {
+  try {
+    await renameWithRetry(src, dest);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code !== 'EXDEV') throw err;
+    await fs.cp(src, dest, { recursive: true });
+    await fs.rm(src, { recursive: true, force: true });
+  }
+}
+
 /** 把冲突的既有内容移入快照,并记录 */
 export async function moveConflictIntoSnapshot(
   snap: SnapshotHandle,
@@ -51,7 +66,7 @@ export async function moveConflictIntoSnapshot(
   const rel = path.join('conflicts', agentId, path.basename(targetPath));
   const movedTo = path.join(snap.dir, rel);
   await fs.mkdir(path.dirname(movedTo), { recursive: true });
-  await fs.rename(targetPath, movedTo);
+  await moveEntry(targetPath, movedTo);
   snap.manifest.items.push({ agentId, targetPath, action: 'conflict-moved', movedTo: rel });
 }
 
@@ -101,7 +116,7 @@ export async function rollback(projectId: string): Promise<{ restored: boolean; 
     } else if (item.action === 'conflict-moved' && item.movedTo) {
       await fs.rm(item.targetPath, { recursive: true, force: true });
       await fs.mkdir(path.dirname(item.targetPath), { recursive: true });
-      await fs.rename(path.join(dir, item.movedTo), item.targetPath);
+      await moveEntry(path.join(dir, item.movedTo), item.targetPath);
     }
   }
   await fs.rm(dir, { recursive: true, force: true });

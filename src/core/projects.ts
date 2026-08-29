@@ -11,7 +11,9 @@ import type { Project, ProjectsData } from './types.js';
 export async function readProjects(): Promise<ProjectsData> {
   const data = await readJsonSafe<ProjectsData>(projectsFile(), { activeProjectId: null, projects: [] });
   if (!Array.isArray(data.projects)) return { activeProjectId: null, projects: [] };
-  return { activeProjectId: data.activeProjectId ?? null, projects: [...data.projects] };
+  // 旧版本档案没有 mcps 字段,兜底空数组,避免后续 p.mcps.includes 崩掉
+  const projects = data.projects.map((p) => ({ ...p, mcps: p.mcps ?? [] }));
+  return { activeProjectId: data.activeProjectId ?? null, projects };
 }
 
 async function writeProjects(data: ProjectsData): Promise<void> {
@@ -42,6 +44,7 @@ export async function createProject(input: {
     path: input.path,
     agents: input.agents ?? [],
     skills: [],
+    mcps: [],
     applyMode: input.applyMode ?? 'symlink',
     createdAt: new Date().toISOString(),
   };
@@ -52,7 +55,7 @@ export async function createProject(input: {
 
 export async function updateProject(
   id: string,
-  patch: Partial<Pick<Project, 'name' | 'agents' | 'skills' | 'applyMode' | 'lastAppliedAt'>>,
+  patch: Partial<Pick<Project, 'name' | 'agents' | 'skills' | 'mcps' | 'applyMode' | 'lastAppliedAt'>>,
 ): Promise<Project | undefined> {
   const data = await readProjects();
   const p = data.projects.find((x) => x.id === id);
@@ -86,6 +89,11 @@ export async function setProjectSkills(id: string, skillIds: string[]): Promise<
   return updateProject(id, { skills: skillIds });
 }
 
+/** 绑定/覆盖项目的 MCP 服务集 */
+export async function setProjectMcps(id: string, mcpNames: string[]): Promise<Project | undefined> {
+  return updateProject(id, { mcps: mcpNames });
+}
+
 /** 从所有项目的技能集中剔除指定 skill(uninstall 时调用,避免悬空引用) */
 export async function detachSkillFromProjects(skillIds: string[]): Promise<void> {
   const ids = new Set(skillIds);
@@ -95,6 +103,21 @@ export async function detachSkillFromProjects(skillIds: string[]): Promise<void>
     const next = p.skills.filter((s) => !ids.has(s));
     if (next.length !== p.skills.length) {
       p.skills = next;
+      dirty = true;
+    }
+  }
+  if (dirty) await writeProjects(data);
+}
+
+/** 从所有项目的 MCP 服务集中剔除指定 server(removeMcp 时调用,避免悬空引用) */
+export async function detachMcpFromProjects(mcpNames: string[]): Promise<void> {
+  const names = new Set(mcpNames);
+  const data = await readProjects();
+  let dirty = false;
+  for (const p of data.projects) {
+    const next = p.mcps.filter((n) => !names.has(n));
+    if (next.length !== p.mcps.length) {
+      p.mcps = next;
       dirty = true;
     }
   }

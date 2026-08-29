@@ -23,6 +23,10 @@ export function projectsFile(): string {
   return path.join(sswHome(), 'projects.json');
 }
 
+export function mcpsFile(): string {
+  return path.join(sswHome(), 'mcps.json');
+}
+
 export function snapshotsDir(): string {
   return path.join(sswHome(), 'snapshots');
 }

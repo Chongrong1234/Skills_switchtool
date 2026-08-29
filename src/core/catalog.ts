@@ -6,7 +6,9 @@
  * - 仓库真实存在,stars 取校验时实际值;
  * - 必须能被 installFromGithub 消费:根/第一层子目录含 SKILL.md,或 skills 集中在某个
  *   子目录下(条目用 subdir 指明,安装时以该子目录为扫描根,见 library.registerSkillsIn);
- * - 纯 awesome 索引类仓库(无 SKILL.md)不收录;单仓 skill 数量过大的合集酌情标注。
+ * - 纯 awesome 索引类仓库(无 SKILL.md)不收录;单仓 skill 数量过大的合集酌情标注;
+ * - plugins 下各子目录 skills 各自为政、无单一可用扫描根的仓库暂不收录
+ *   (如 trailofbits/skills、microsoft/agent-skills、phuryn/pm-skills)。
  */
 import { readRegistry } from './registry.js';
 
@@ -30,9 +32,12 @@ export const CATALOG_CATEGORIES: CatalogCategory[] = [
   { id: 'research', name: '科研' },
   { id: 'writing', name: '写作' },
   { id: 'marketing', name: '营销增长' },
+  { id: 'product', name: '产品管理' },
   { id: 'design', name: '设计' },
+  { id: 'media', name: '音视频与图像' },
   { id: 'data-ai', name: '数据与 AI' },
   { id: 'devops', name: 'DevOps 运维' },
+  { id: 'security', name: '安全' },
   { id: 'productivity', name: '效率办公' },
 ];
 

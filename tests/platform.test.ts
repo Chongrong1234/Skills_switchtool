@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applyProject } from '../src/core/apply.js';
 import { assertValidSkillName, initSkill, installFromLocal, skillDirOf } from '../src/core/library.js';
 import { createProject, setProjectSkills } from '../src/core/projects.js';
+import { listSnapshots, rollback } from '../src/core/snapshot.js';
 import { claudeCode } from '../src/adapters/claude-code.js';
 
 let tmp: string;
@@ -108,5 +109,75 @@ describe('Windows 兼容:skill 名称合法性', () => {
     await fs.mkdir(src, { recursive: true });
     await fs.writeFile(path.join(src, 'SKILL.md'), '---\nname: prn\ndescription: 保留名\n---\n', 'utf8');
     await expect(installFromLocal(src)).rejects.toThrow('保留文件名');
+  });
+});
+
+describe('Windows 兼容:降级 copy 后的 apply 幂等', () => {
+  it('symlink EPERM 降级 copy 后,重复 apply 跳过副本(不再误当冲突移入快照)', async () => {
+    const skill = await initSkill('win-idem', '降级幂等');
+    const project = await createProject({
+      name: 'demo',
+      path: projectPath,
+      agents: ['claude-code'],
+      applyMode: 'symlink',
+    });
+    await setProjectSkills(project.id, [skill.id]);
+
+    vi.spyOn(fs, 'symlink').mockRejectedValue(
+      Object.assign(new Error('operation not permitted'), { code: 'EPERM' }),
+    );
+    const first = await applyProject(project.id);
+    expect(first.applied[0].mode).toBe('copy');
+
+    const second = await applyProject(project.id);
+    expect(second.applied).toHaveLength(0); // 副本被认出是"我们的",幂等跳过
+    expect(await listSnapshots(project.id)).toHaveLength(1); // 没有多余快照
+  });
+});
+
+describe('跨设备移动(rename EXDEV,Windows C:/D: 盘场景)', () => {
+  it('冲突移入快照与回滚还原都降级为 复制+删除,内容完整', async () => {
+    const skill = await initSkill('exdev-skill', 'EXDEV 测试');
+    const skillsDir = claudeCode.projectSkillsDir(projectPath);
+    const dest = path.join(skillsDir, 'exdev-skill');
+    // 预先放一个同名的用户目录
+    await fs.mkdir(dest, { recursive: true });
+    await fs.writeFile(path.join(dest, 'SKILL.md'), '---\nname: exdev-skill\ndescription: 用户旧版\n---\n', 'utf8');
+    await fs.writeFile(path.join(dest, 'note.txt'), '用户数据', 'utf8');
+
+    const project = await createProject({
+      name: 'demo',
+      path: projectPath,
+      agents: ['claude-code'],
+      applyMode: 'symlink',
+    });
+    await setProjectSkills(project.id, [skill.id]);
+
+    // 模拟跨设备:涉及项目目录的 rename 一律 EXDEV(注册表/快照内部移动仍走真实 rename)
+    // 注意带路径分隔符比较:"tmp/proj" 是 "tmp/projects.json" 的裸前缀
+    const origRename = fs.rename;
+    const underProject = (p: unknown) => String(p).startsWith(projectPath + path.sep);
+    vi.spyOn(fs, 'rename').mockImplementation(async (src, dst) => {
+      if (underProject(src) || underProject(dst)) {
+        throw Object.assign(new Error('cross-device link not permitted'), { code: 'EXDEV' });
+      }
+      return origRename(src, dst);
+    });
+
+    const result = await applyProject(project.id);
+    expect(result.applied).toHaveLength(1);
+    // 用户旧目录完整进了快照
+    const snaps = await listSnapshots(project.id);
+    expect(snaps).toHaveLength(1);
+    const moved = path.join(
+      tmp, 'snapshots', project.id, snaps[0], 'conflicts', 'claude-code', 'exdev-skill', 'note.txt',
+    );
+    expect(await fs.readFile(moved, 'utf8')).toBe('用户数据');
+
+    // 回滚同样跨设备,仍能还原
+    const rb = await rollback(project.id);
+    expect(rb.restored).toBe(true);
+    expect((await fs.lstat(dest)).isSymbolicLink()).toBe(false);
+    expect(await fs.readFile(path.join(dest, 'note.txt'), 'utf8')).toBe('用户数据');
   });
 });

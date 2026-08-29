@@ -11,15 +11,27 @@ const state = {
   catalog: null,           // 推荐库缓存 {categories, items},null = 未加载/已失效
   catalogCategory: '',     // 推荐库当前分类过滤('' = 全部)
   catalogQuery: '',        // 推荐库当前搜索词
+  serverCwd: null,         // /api/meta 缓存:服务进程 cwd,新建项目预填路径用
 };
 
 // ---------- 工具 ----------
 async function api(method, url, body) {
-  const res = await fetch(url, {
-    method,
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  let res;
+  try {
+    res = await fetch(url, {
+      method,
+      headers: body ? { 'Content-Type': 'application/json' } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+      // 前端兜底超时:大于服务端 git 超时(默认 120s),正常情况下服务端的明确错误先到
+      signal: AbortSignal.timeout(180_000),
+    });
+  } catch (err) {
+    // 超时/断连也要抛出可读错误,否则按钮永远停在"安装中…"
+    if (err.name === 'TimeoutError' || err.name === 'AbortError') {
+      throw new Error('请求超时:服务 180s 无响应(若是安装操作,多为网络无法访问 GitHub,请检查网络/代理)');
+    }
+    throw new Error(`无法连接服务: ${err.message}`);
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `请求失败 (${res.status})`);
   return data;
@@ -293,7 +305,7 @@ function openNewProjectModal() {
   const modal = openModal(`
     <h2>新建项目</h2>
     <div class="form-row"><label>项目名称</label><input type="text" id="np-name" placeholder="my-app" /></div>
-    <div class="form-row"><label>目录路径(绝对路径)</label><input type="text" id="np-path" placeholder="/home/me/my-app" /></div>
+    <div class="form-row"><label>目录路径(留空取服务启动目录)</label><input type="text" id="np-path" placeholder="/home/me/my-app" /></div>
     <div class="form-row"><label>应用模式</label>
       <div class="radio-group">
         <label><input type="radio" name="np-mode" value="symlink" checked /> symlink(推荐,改动即时生效)</label>
@@ -309,15 +321,27 @@ function openNewProjectModal() {
       <button class="btn btn-primary" id="np-submit">创建并获取推荐</button>
     </div>
   `);
+  // 路径自动填充:取服务进程的工作目录(ssw serve / 桌面版的启动目录,通常就是项目根);
+  // 打开弹窗即填,勾选 agent 时若仍为空也会补上,均可再手改
+  const fillDefaultPath = () => run(async () => {
+    if (!state.serverCwd) state.serverCwd = (await api('GET', '/api/meta')).cwd;
+    const input = modal.querySelector('#np-path');
+    if (!input.value.trim()) input.value = state.serverCwd;
+  });
+  fillDefaultPath();
+  modal.querySelectorAll('input[name="m-agent"]').forEach((cb) =>
+    cb.addEventListener('change', fillDefaultPath));
   modal.querySelector('#np-cancel').addEventListener('click', closeModal);
   modal.querySelector('#np-submit').addEventListener('click', () => run(async () => {
     const name = modal.querySelector('#np-name').value.trim();
     const projPath = modal.querySelector('#np-path').value.trim();
     const applyMode = modal.querySelector('input[name="np-mode"]:checked').value;
     const agents = [...modal.querySelectorAll('input[name="m-agent"]:checked')].map((x) => x.value);
-    if (!name || !projPath) return toast('名称与路径必填', 'err');
+    if (!name) return toast('名称必填', 'err');
 
-    const project = await api('POST', '/api/projects', { name, path: projPath, agents, applyMode });
+    const body = { name, agents, applyMode };
+    if (projPath) body.path = projPath; // 留空时由服务端取 process.cwd()
+    const project = await api('POST', '/api/projects', body);
     state.selectedProjectId = project.id;
     await loadAll();
 
@@ -355,14 +379,21 @@ function openNewProjectModal() {
       btn.addEventListener('click', () => run(async () => {
         btn.disabled = true;
         btn.textContent = '安装中…';
-        const installed = await api('POST', '/api/skills', { source: 'github', uri: btn.dataset.recUrl });
-        const latest = (await api('GET', `/api/projects/${project.id}`));
-        await api('POST', `/api/projects/${project.id}/skills`, {
-          skillIds: [...latest.skills, ...installed.map((s) => s.id)],
-        });
-        await loadAll();
-        btn.textContent = '已加入 ✓';
-        toast(`已安装 ${installed.length} 个 skill 并绑定到项目`);
+        try {
+          const installed = await api('POST', '/api/skills', { source: 'github', uri: btn.dataset.recUrl });
+          const latest = (await api('GET', `/api/projects/${project.id}`));
+          await api('POST', `/api/projects/${project.id}/skills`, {
+            skillIds: [...latest.skills, ...installed.map((s) => s.id)],
+          });
+          await loadAll();
+          btn.textContent = '已加入 ✓';
+          toast(`已安装 ${installed.length} 个 skill 并绑定到项目`);
+        } catch (err) {
+          // 失败必须恢复按钮,否则会永远停在"安装中…";错误继续抛给 run() 弹 toast
+          btn.disabled = false;
+          btn.textContent = '加入库并绑定';
+          throw err;
+        }
       })));
   }));
 }
@@ -424,11 +455,17 @@ function openInstallGithubModal() {
     if (!uri) return toast('请输入仓库地址', 'err');
     const btn = modal.querySelector('#m-ok');
     btn.disabled = true; btn.textContent = '安装中…';
-    const installed = await api('POST', '/api/skills', { source: 'github', uri });
-    await loadAll();
-    closeModal();
-    render();
-    toast(`已安装 ${installed.length} 个 skill`);
+    try {
+      const installed = await api('POST', '/api/skills', { source: 'github', uri });
+      await loadAll();
+      closeModal();
+      render();
+      toast(`已安装 ${installed.length} 个 skill`);
+    } catch (err) {
+      // 失败恢复按钮可重试(弹窗保持打开);错误继续抛给 run() 弹 toast
+      btn.disabled = false; btn.textContent = '安装';
+      throw err;
+    }
   }));
 }
 
@@ -530,7 +567,14 @@ function openImportModal() {
     if (!code) return toast('请粘贴迁移码', 'err');
     const btn = modal.querySelector('#m-ok');
     btn.disabled = true; btn.textContent = '导入中…';
-    const r = await api('POST', '/api/skills/import', { code });
+    let r;
+    try {
+      r = await api('POST', '/api/skills/import', { code });
+    } catch (err) {
+      // 失败恢复按钮可重试;错误继续抛给 run() 弹 toast
+      btn.disabled = false; btn.textContent = '导入';
+      throw err;
+    }
     await loadAll();
     render(); // 主区卡片刷新;弹窗保持打开展示明细
     const lines = [

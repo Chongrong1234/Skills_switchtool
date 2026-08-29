@@ -2,16 +2,17 @@
  * tui.ts —— 终端交互面板(TUI):不带子命令启动 ssw/skills 时进入。
  * 零依赖实现:stdin raw 模式解析按键,ANSI 转义序列渲染,不引入 blessed/Ink。
  * 主视图 = 项目列表(仿 cc-switch 的切换面板):↑↓ 移动光标,Enter 切换并 apply;
- * a apply / u unapply / r 回滚 / s 技能库视图 / q 或 Ctrl-C 退出,Esc 返回项目视图。
+ * a apply / u unapply / r 回滚 / s 技能库 / m MCP 库 / q 或 Ctrl-C 退出,Esc 返回项目视图。
  */
 import { adapters } from './adapters/index.js';
 import { applyProject, unapplyProject } from './core/apply.js';
 import { listSkills } from './core/library.js';
+import { listMcps } from './core/mcps.js';
 import { listProjects, setActiveProject } from './core/projects.js';
 import { rollback } from './core/snapshot.js';
-import type { Project, SkillEntry } from './core/types.js';
+import type { McpEntry, Project, SkillEntry } from './core/types.js';
 
-type View = 'projects' | 'skills';
+type View = 'projects' | 'skills' | 'mcps';
 
 interface State {
   view: View;
@@ -23,6 +24,7 @@ interface State {
   projects: Project[];
   activeProjectId: string | null;
   skills: SkillEntry[];
+  mcps: McpEntry[];
 }
 
 const INV = '\x1b[7m'; // 反色(光标行)
@@ -44,6 +46,7 @@ export async function startTui(): Promise<void> {
     projects: [],
     activeProjectId: null,
     skills: [],
+    mcps: [],
   };
 
   async function reload(): Promise<void> {
@@ -54,6 +57,7 @@ export async function startTui(): Promise<void> {
       state.cursor = Math.max(0, state.projects.length - 1);
     }
     state.skills = await listSkills();
+    state.mcps = await listMcps();
   }
 
   function render(): void {
@@ -71,12 +75,12 @@ export async function startTui(): Promise<void> {
       }
       state.projects.forEach((p, i) => {
         const mark = p.id === state.activeProjectId ? '*' : ' ';
-        const line = `${mark} ${p.name.padEnd(16)} ${cut(p.path, 32).padEnd(32)} [${p.agents.join(',')}]  skills: ${p.skills.length}`;
+        const line = `${mark} ${p.name.padEnd(16)} ${cut(p.path, 32).padEnd(32)} [${p.agents.join(',')}]  skills: ${p.skills.length}  mcps: ${p.mcps.length}`;
         lines.push(i === state.cursor ? `${INV} ${cut(line, cols - 2)} ${RESET}` : ` ${cut(line, cols - 2)}`);
       });
       lines.push('');
-      lines.push(`${DIM}↑↓ 移动  Enter 切换并 apply  a apply  u unapply  r 回滚  s 技能库  q 退出${RESET}`);
-    } else {
+      lines.push(`${DIM}↑↓ 移动  Enter 切换并 apply  a apply  u unapply  r 回滚  s 技能库  m MCP库  q 退出${RESET}`);
+    } else if (state.view === 'skills') {
       lines.push(`技能库(${state.skills.length}):`);
       lines.push('');
       if (!state.skills.length) {
@@ -84,6 +88,18 @@ export async function startTui(): Promise<void> {
       }
       for (const s of state.skills.slice(0, (process.stdout.rows || 24) - 8)) {
         lines.push(`  ${s.id.padEnd(28)} ${cut(s.name, 16).padEnd(16)} [${s.source.type}]  ${cut(s.description, 24)}`);
+      }
+      lines.push('');
+      lines.push(`${DIM}Esc 返回项目视图  q 退出${RESET}`);
+    } else {
+      lines.push(`MCP 库(${state.mcps.length}):`);
+      lines.push('');
+      if (!state.mcps.length) {
+        lines.push('(库为空,先用 ssw mcp add 添加)');
+      }
+      for (const m of state.mcps.slice(0, (process.stdout.rows || 24) - 8)) {
+        const target = m.transport === 'stdio' ? `${m.command} ${(m.args ?? []).join(' ')}` : m.url;
+        lines.push(`  ${m.name.padEnd(20)} [${m.transport}]  ${cut(target ?? '', 40)}`);
       }
       lines.push('');
       lines.push(`${DIM}Esc 返回项目视图  q 退出${RESET}`);
@@ -137,7 +153,7 @@ export async function startTui(): Promise<void> {
         }
         return;
       }
-      if (state.view === 'skills') return; // 技能库视图只响应 Esc/q
+      if (state.view !== 'projects') return; // 技能库/MCP 库视图只响应 Esc/q
       switch (key) {
         case '\u001b[A': // ↑
           state.cursor = Math.max(0, state.cursor - 1);
@@ -152,6 +168,11 @@ export async function startTui(): Promise<void> {
           state.message = '';
           render();
           break;
+        case 'm':
+          state.view = 'mcps';
+          state.message = '';
+          render();
+          break;
         case '\r': { // Enter:切换激活项目并 apply
           const p = currentProject();
           if (!p) return;
@@ -159,7 +180,7 @@ export async function startTui(): Promise<void> {
             await setActiveProject(p.id);
             const r = await applyProject(p.id);
             const warn = r.warnings.length ? `\n警告: ${r.warnings.join('; ')}` : '';
-            return `✓ 已切换到「${p.name}」并应用 ${r.applied.length} 项${warn}`;
+            return `✓ 已切换到「${p.name}」并应用 skills ${r.applied.length} 项、MCP ${r.mcpApplied.length} 项${warn}`;
           });
           break;
         }
@@ -169,7 +190,7 @@ export async function startTui(): Promise<void> {
           void run(async () => {
             const r = await applyProject(p.id);
             const warn = r.warnings.length ? `\n警告: ${r.warnings.join('; ')}` : '';
-            return `✓ 已应用 ${r.applied.length} 项(项目「${p.name}」)${warn}`;
+            return `✓ 已应用 skills ${r.applied.length} 项、MCP ${r.mcpApplied.length} 项(项目「${p.name}」)${warn}`;
           });
           break;
         }

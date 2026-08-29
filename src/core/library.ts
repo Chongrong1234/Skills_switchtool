@@ -1,6 +1,9 @@
 /**
  * 中央库:安装(github→git clone --depth 1 / local→复制)、卸载、更新、自建脚手架。
  * 库是唯一事实来源,所有 skill 实体都存放在 ~/.skills-switch/library/ 下。
+ * git 调用统一走 runGit:有超时(默认 120s,SSW_GIT_TIMEOUT_MS 覆盖)且禁用交互式
+ * 凭据提示——本工具常跑在 GUI/服务进程里,git 一旦挂起或在用户看不到的终端等输入,
+ * 表现就是前端永远"安装中…"。
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -15,19 +18,53 @@ const execFileP = promisify(execFile);
 
 export class LibraryError extends Error {}
 
+/** git 调用默认超时:2 分钟;SSW_GIT_TIMEOUT_MS 可覆盖(慢网调大,测试调小) */
+const DEFAULT_GIT_TIMEOUT_MS = 120_000;
+
+/** 每次调用重读环境变量(同 paths.ts 的测试隔离约定);非法值回退默认 */
+function gitTimeoutMs(): number {
+  const raw = Number(process.env.SSW_GIT_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_GIT_TIMEOUT_MS;
+}
+
+/** 从 git 参数里提取真实子命令名(clone/pull),用于错误消息;-c/-C 各带一个值需跳过 */
+function gitSubcommand(args: string[]): string {
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '-c' || a === '-C') { i++; continue; }
+    if (!a.startsWith('-')) return a;
+  }
+  return args[0] ?? 'git';
+}
+
 /**
- * 执行 git 子命令。Windows 等环境 git 可能不在 PATH(spawn ENOENT),
- * 统一包装成可读的 LibraryError 而不是裸崩溃。
+ * 执行 git 子命令。三类失败都包装成可读的 LibraryError 而不是裸崩溃/挂死:
+ * - git 不在 PATH(spawn ENOENT,Windows 常见)
+ * - 超时:killed 为 true 说明是本进程的 timeout 杀掉了子进程(网络挂起等)
+ * - 凭据提示:GIT_TERMINAL_PROMPT=0 强制失败而非在控制终端等输入——
+ *   GUI/服务进程里那个提示用户根本看不到,表现就是永久"安装中…"
  */
 async function runGit(args: string[]): Promise<void> {
+  const sub = gitSubcommand(args);
+  const timeoutMs = gitTimeoutMs();
   try {
-    await execFileP('git', args);
+    // maxBuffer 调大:大仓库 clone/pull 失败时 stderr 可能很长,默认 1MB 会把真实错误截断成 "maxBuffer exceeded"
+    await execFileP('git', args, {
+      maxBuffer: 16 * 1024 * 1024,
+      timeout: timeoutMs,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+    });
   } catch (err) {
     const code = (err as NodeJS.ErrnoException)?.code;
     if (code === 'ENOENT') {
       throw new LibraryError('未找到 git 命令(请先安装 Git 并加入 PATH);从 GitHub 安装/更新 skill 需要 git');
     }
-    throw new LibraryError(`git ${args[0]} 失败: ${err instanceof Error ? err.message : String(err)}`);
+    if ((err as { killed?: boolean })?.killed) {
+      throw new LibraryError(
+        `git ${sub} 超时(${Math.round(timeoutMs / 1000)}s 未完成):网络访问 GitHub 过慢或不可达,请检查网络/代理后重试`,
+      );
+    }
+    throw new LibraryError(`git ${sub} 失败: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -104,9 +141,15 @@ function normalizeGithubUri(uri: string): { owner: string; repo: string; cloneUr
 /**
  * 规范化子目录参数:去掉首尾斜杠;拒绝空段、"."、".." 等越界成分。
  * 合法返回规范化后的相对路径;未传返回 undefined;非法抛 LibraryError。
+ * 安全前提:subdir 会写进 SkillEntry.id 并参与拼库内路径(skillDirOf),必须拒绝
+ *   - '\':Windows 上也是路径分隔符,'..\..' 会穿越到库外(uninstall 的递归 rm 会删库外目录)
+ *   - ':':会撑爆 skillDirOf 的 split(':')(且是 Windows 非法字符)
  */
 function normalizeSubdir(subdir?: string): string | undefined {
   if (subdir === undefined) return undefined;
+  if (/[\\:]/.test(subdir)) {
+    throw new LibraryError(`非法子目录: ${subdir}`);
+  }
   const s = subdir.trim().replace(/^\/+|\/+$/g, '');
   if (!s || s.split('/').some((p) => !p || p === '.' || p === '..')) {
     throw new LibraryError(`非法子目录: ${subdir}`);
@@ -170,8 +213,12 @@ export async function installFromGithub(uri: string, subdir?: string): Promise<S
   await fs.rm(dest, { recursive: true, force: true });
   await fs.mkdir(libraryDir(), { recursive: true });
   try {
-    await runGit(['clone', '--depth', '1', cloneUrl, dest]);
+    // -c core.longpaths=true:Windows 默认 260 字符路径上限,库路径叠加合集仓库深目录可能超限;
+    // 其它平台该配置静默无效
+    await runGit(['-c', 'core.longpaths=true', 'clone', '--depth', '1', cloneUrl, dest]);
   } catch (err) {
+    // clone 失败(含超时被 kill)不留半个仓库的残目录,避免污染后续同名安装
+    await fs.rm(dest, { recursive: true, force: true }).catch(() => { /* 清理失败不掩盖原始错误 */ });
     if (err instanceof LibraryError) throw err;
     throw new LibraryError(`git clone 失败: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -184,13 +231,25 @@ export async function installFromGithub(uri: string, subdir?: string): Promise<S
   return installed;
 }
 
+/**
+ * 判断两个路径是否指向同一个实际位置(基于 realpath,解析符号链接与盘符上的真实写法)。
+ * 路径不存在时回退到 path.resolve 的结果。独立导出便于测试。
+ * 用于"源即目标"的自杀式复制防护:纯字符串比较在 Windows/macOS 上会被
+ * 大小写差异、8.3 短名绕过,先 rm 再 cp 同一目录会造成数据丢失。
+ */
+export async function sameRealPath(a: string, b: string): Promise<boolean> {
+  const canonical = async (p: string) => fs.realpath(p).catch(() => path.resolve(p));
+  const [ra, rb] = await Promise.all([canonical(a), canonical(b)]);
+  return ra === rb;
+}
+
 /** 从本地路径安装:复制目录入中央库 */
 export async function installFromLocal(dir: string): Promise<SkillEntry> {
   const abs = path.resolve(dir);
   const { name, description } = await validateSkillDir(abs); // SKILL.md 缺失/非法时拒绝
   const id = `local:${name}`;
   const dest = path.join(libraryDir(), `local__${name}`);
-  if (abs === dest) {
+  if (await sameRealPath(abs, dest)) {
     // 源即库内目录:若先 rm 再 cp 会变成自我复制(数据丢失),直接拒绝
     throw new LibraryError(`源目录已在库中,无需重复安装: ${abs}`);
   }
@@ -268,7 +327,7 @@ export async function updateSkill(id: string): Promise<SkillEntry> {
   }
   // local:源就是库内目录时(initSkill 自建的 skill)只刷新元数据;
   // 直接走 installFromLocal 会先 rm 再 cp 同一目录,导致数据丢失
-  if (path.resolve(entry.source.uri) === skillDirOf(entry)) {
+  if (await sameRealPath(entry.source.uri, skillDirOf(entry))) {
     const { name, description } = await validateSkillDir(skillDirOf(entry));
     const next = { ...entry, name, description };
     await upsertSkill(next);

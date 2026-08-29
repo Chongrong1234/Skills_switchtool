@@ -1,5 +1,5 @@
 /**
- * library 测试:initSkill 脚手架合法、local 安装复制目录、SKILL.md 缺失拒绝安装、卸载。
+ * library 测试:initSkill 脚手架合法、local 安装复制目录、SKILL.md 缺失拒绝安装、卸载、git 超时快速报错。
  */
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -7,8 +7,10 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   initSkill,
+  installFromGithub,
   installFromLocal,
   parseFrontmatter,
+  sameRealPath,
   skillDirOf,
   uninstall,
   updateSkill,
@@ -169,5 +171,49 @@ describe('library', () => {
     await expect(fs.access(repoDir)).resolves.toBeUndefined();
     expect(await getSkill('o/r3:b')).toBeDefined();
     await expect(fs.access(skillDirOf(a))).rejects.toThrow();
+  });
+
+  it('subdir 拒绝反斜杠/冒号/越界段(在 git clone 前校验,不触网)', async () => {
+    // '\':Windows 路径分隔符,'..\..' 会穿越到库外;':':撑爆 id 的 split(':')
+    for (const bad of ['..\\..', 'a:b', 'skills\\evil', '..', 'a//b', '']) {
+      await expect(installFromGithub('owner/repo', bad)).rejects.toThrow('非法子目录');
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'git 挂起时按超时快速报错,不永久"安装中"(SSW_GIT_TIMEOUT_MS 可覆盖)',
+    async () => {
+      // 造一个只会沉睡的假 git 放在 PATH 最前;clone 永不返回 → 应被 timeout 杀掉并报超时。
+      // win32 跳过:.cmd 无法被 execFile 直接 spawn(Node ≥18.20/20.12 起无 shell 抛 EINVAL)
+      const binDir = path.join(tmp, 'fake-bin');
+      await fs.mkdir(binDir, { recursive: true });
+      const sleeper = path.join(binDir, 'git-sleeper.mjs');
+      await fs.writeFile(sleeper, 'setTimeout(() => {}, 60_000);\n', 'utf8');
+      const fakeGit = path.join(binDir, 'git');
+      // exec 让 node 顶替 sh 进程,timeout 杀死的就是它,不留孤儿
+      await fs.writeFile(fakeGit, `#!/bin/sh\nexec "${process.execPath}" "${sleeper}" "$@"\n`, 'utf8');
+      await fs.chmod(fakeGit, 0o755);
+      const oldPath = process.env.PATH;
+      process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ''}`;
+      process.env.SSW_GIT_TIMEOUT_MS = '150';
+      try {
+        await expect(installFromGithub('owner/repo')).rejects.toThrow(/超时/);
+      } finally {
+        if (oldPath === undefined) delete process.env.PATH;
+        else process.env.PATH = oldPath;
+        delete process.env.SSW_GIT_TIMEOUT_MS;
+      }
+      // 失败不留半个 clone 的残目录
+      await expect(fs.access(path.join(libraryDir(), 'github__owner__repo'))).rejects.toThrow();
+    },
+  );
+
+  it('sameRealPath 识别同一位置的不同写法(防自杀式复制绕过)', async () => {
+    const dir = path.join(tmp, 'real-dir');
+    await fs.mkdir(dir, { recursive: true });
+    // "dir/../dir" 等价写法
+    expect(await sameRealPath(dir, path.join(tmp, 'real-dir', '..', 'real-dir'))).toBe(true);
+    // 不同位置
+    expect(await sameRealPath(dir, path.join(tmp, 'other'))).toBe(false);
   });
 });

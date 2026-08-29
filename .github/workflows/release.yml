@@ -43,6 +43,9 @@ jobs:
       - name: 编译 TypeScript
         run: npm run build
 
+      - name: 运行测试(坏代码不进 Release)
+        run: npm test
+
       - name: 构建并打包(electron-builder)
         run: npx electron-builder ${{ matrix.target }}
         env:
