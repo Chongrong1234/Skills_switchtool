@@ -10,6 +10,7 @@ import {
   CATALOG,
   CATALOG_CATEGORIES,
   listCatalog,
+  listCatalogCategories,
   listCatalogWithInstalled,
 } from '../src/core/catalog.js';
 import { installFromGithub, LibraryError, registerSkillsIn } from '../src/core/library.js';
@@ -149,6 +150,23 @@ describe('listCatalogWithInstalled 标记', () => {
     expect(hit.installedCount).toBe(1);
     // 其它 MCP 条目不受影响
     expect(items.find((i) => i.kind === 'mcp' && i.id !== target.id && i.installed)).toBeUndefined();
+  });
+});
+
+describe('listCatalogCategories 分类统计', () => {
+  it('计数与 listCatalog 过滤一致,skill/MCP 细分之和等于总数,覆盖所有分类', () => {
+    const cats = listCatalogCategories();
+    expect(cats.map((c) => c.id)).toEqual(CATALOG_CATEGORIES.map((c) => c.id));
+    let sum = 0;
+    for (const c of cats) {
+      const entries = listCatalog({ category: c.id });
+      expect(c.count).toBe(entries.length);
+      expect(c.count).toBeGreaterThan(0); // 分类无空档
+      expect(c.skills + c.mcps).toBe(c.count);
+      expect(c.skills).toBe(entries.filter((e) => e.kind !== 'mcp').length);
+      sum += c.count;
+    }
+    expect(sum).toBe(CATALOG.length);
   });
 });
 

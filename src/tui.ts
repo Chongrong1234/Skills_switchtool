@@ -3,11 +3,12 @@
  * 零依赖实现:stdin raw 模式解析按键,ANSI 转义序列渲染,不引入 blessed/Ink。
  * 主视图 = 项目列表(仿 cc-switch 的切换面板):↑↓ 移动光标,Enter 切换并 apply;
  * a apply / u unapply / r 回滚 / s 技能库 / m MCP 库 / g 全局共享 / c 推荐库 / q 或 Ctrl-C 退出,Esc 返回项目视图。
- * 全局共享视图里 a/u/r 作用于全局(用户级)物化;技能库/MCP 库/推荐库为只读视图(增删改走 CLI 子命令)。
+ * 全局共享视图里 a/u/r 作用于全局(用户级)物化;推荐库视图内 c 循环切换分类过滤;
+ * 技能库/MCP 库/推荐库为只读视图(增删改走 CLI 子命令)。
  */
 import { adapters } from './adapters/index.js';
 import { applyProject, unapplyProject } from './core/apply.js';
-import { listCatalogWithInstalled, type CatalogEntryWithInstalled } from './core/catalog.js';
+import { CATALOG_CATEGORIES, listCatalogWithInstalled, type CatalogEntryWithInstalled } from './core/catalog.js';
 import {
   applyGlobal,
   readGlobal,
@@ -36,6 +37,8 @@ interface State {
   mcps: McpEntry[];
   globalProfile: GlobalProfile;
   catalog: CatalogEntryWithInstalled[];
+  /** 推荐库分类过滤('' = 全部);推荐库视图内按 c 循环切换 */
+  catalogCategory: string;
 }
 
 const INV = '\x1b[7m'; // 反色(光标行)
@@ -60,6 +63,7 @@ export async function startTui(): Promise<void> {
     mcps: [],
     globalProfile: { skills: [], agents: [], applyMode: 'symlink' },
     catalog: [],
+    catalogCategory: '',
   };
 
   async function reload(): Promise<void> {
@@ -137,15 +141,20 @@ export async function startTui(): Promise<void> {
       lines.push('');
       lines.push(`${DIM}a apply  u unapply  r 回滚  Esc 返回项目视图  q 退出${RESET}`);
     } else {
-      lines.push(`推荐库(${state.catalog.length}):  ${DIM}安装: ssw catalog install <id>${RESET}`);
+      const catName = (id: string) => CATALOG_CATEGORIES.find((c) => c.id === id)?.name ?? id;
+      const filtered = state.catalogCategory
+        ? state.catalog.filter((e) => e.category === state.catalogCategory)
+        : state.catalog;
+      const catLabel = state.catalogCategory ? catName(state.catalogCategory) : '全部';
+      lines.push(`推荐库(${filtered.length}/${state.catalog.length})  分类: ${catLabel}  ${DIM}安装: ssw catalog install <id>${RESET}`);
       lines.push('');
-      for (const e of state.catalog.slice(0, rows - 8)) {
+      for (const e of filtered.slice(0, rows - 8)) {
         const mark = e.installed ? '✓' : ' ';
         const star = e.stars > 0 ? ` ★${e.stars}` : '';
-        lines.push(` ${mark} ${cut(e.id, 42).padEnd(42)} [${e.category}]${star}  ${cut(e.name, 18)}`);
+        lines.push(` ${mark} ${cut(e.id, 42).padEnd(42)} [${catName(e.category)}]${star}  ${cut(e.name, 18)}`);
       }
       lines.push('');
-      lines.push(`${DIM}Esc 返回项目视图  q 退出${RESET}`);
+      lines.push(`${DIM}c 切换分类  Esc 返回项目视图  q 退出${RESET}`);
     }
 
     if (state.message) {
@@ -222,7 +231,17 @@ export async function startTui(): Promise<void> {
         }
         return;
       }
-      if (state.view !== 'projects') return; // 技能库/MCP 库/推荐库为只读视图,只响应 Esc/q
+      if (state.view === 'catalog') {
+        // 推荐库视图:c 循环切换分类过滤(全部 → 各分类 → 全部)
+        if (key === 'c') {
+          const ids = CATALOG_CATEGORIES.map((c) => c.id);
+          const idx = ids.indexOf(state.catalogCategory);
+          state.catalogCategory = idx >= 0 && idx + 1 < ids.length ? ids[idx + 1] : '';
+          render();
+        }
+        return;
+      }
+      if (state.view !== 'projects') return; // 技能库/MCP 库为只读视图,只响应 Esc/q
       switch (key) {
         case '\u001b[A': // ↑
           state.cursor = Math.max(0, state.cursor - 1);

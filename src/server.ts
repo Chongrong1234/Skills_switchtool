@@ -30,7 +30,7 @@ import {
   setProjectSkills,
   updateProject,
 } from './core/projects.js';
-import { CATALOG_CATEGORIES, listCatalogWithInstalled } from './core/catalog.js';
+import { listCatalogCategories, listCatalogWithInstalled } from './core/catalog.js';
 import { exportSkillsCode, importSkillsCode, parseSkillsCode } from './core/migrate.js';
 import { listMcps, McpError, removeMcp, upsertMcp } from './core/mcps.js';
 import { recommendForProject } from './core/recommend.js';
@@ -274,12 +274,12 @@ export function createApp(): express.Express {
     res.status(201).json(entry);
   }));
 
-  // ---- catalog 推荐库(内置精选目录,安装复用 POST /api/skills)----
+  // ---- catalog 推荐库(内置精选目录,安装复用 POST /api/skills;categories 带条目统计)----
   app.get('/api/catalog', h(async (req, res) => {
     const category = req.query.category ? String(req.query.category) : undefined;
     const query = req.query.q ? String(req.query.q) : undefined;
     res.json({
-      categories: CATALOG_CATEGORIES,
+      categories: listCatalogCategories(),
       items: await listCatalogWithInstalled({ category, query }),
     });
   }));

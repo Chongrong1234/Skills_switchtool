@@ -169,4 +169,20 @@ describe('server 校验(与 CLI 行为对齐)', () => {
     expect(r.status).toBe(200);
     expect(r.data).toEqual({ jobs: [] });
   });
+
+  it('GET /api/catalog:分类带条目统计,count 之和等于条目总数;category 过滤生效', async () => {
+    const r = await api('GET', '/api/catalog');
+    expect(r.status).toBe(200);
+    expect(r.data.categories.length).toBeGreaterThan(0);
+    for (const c of r.data.categories) {
+      expect(typeof c.count).toBe('number');
+      expect(c.count).toBe(c.skills + c.mcps);
+    }
+    const total = r.data.categories.reduce((n: number, c: { count: number }) => n + c.count, 0);
+    expect(total).toBe(r.data.items.length);
+    // 分类过滤:只含该分类条目
+    const devId = r.data.categories[0].id;
+    const filtered = await api('GET', `/api/catalog?category=${devId}`);
+    expect(filtered.data.items.every((e: { category: string }) => e.category === devId)).toBe(true);
+  });
 });

@@ -32,7 +32,7 @@ import {
 } from './core/projects.js';
 import { listMcps, removeMcp, upsertMcp } from './core/mcps.js';
 import { recommendForProject } from './core/recommend.js';
-import { CATALOG, CATALOG_CATEGORIES, listCatalogWithInstalled } from './core/catalog.js';
+import { CATALOG, listCatalogCategories, listCatalogWithInstalled } from './core/catalog.js';
 import { exportSkillsCode, importSkillsCode, parseSkillsCode } from './core/migrate.js';
 import { rollback } from './core/snapshot.js';
 import type { Project } from './core/types.js';
@@ -517,13 +517,14 @@ const catalogCmd = leaf(
   program
     .command('catalog')
     .description('推荐库:内置精选高 star skills 目录,按 star 降序')
-    .option('--category <id>', '只看某个分类(id 见 --json 输出的 categories)')
+    .option('--category <id>', '只看某个分类(id 见 ssw catalog categories)')
     .option('--q <keyword>', '关键词过滤(名称/描述/仓库)'),
 ).action(
   wrap(async (cmd, opts: { category?: string; q?: string }) => {
     const items = await listCatalogWithInstalled({ category: opts.category, query: opts.q });
-    out(cmd, { categories: CATALOG_CATEGORIES, items }, () => {
-      const catName = (id: string) => CATALOG_CATEGORIES.find((c) => c.id === id)?.name ?? id;
+    const cats = listCatalogCategories();
+    out(cmd, { categories: cats, items }, () => {
+      const catName = (id: string) => cats.find((c) => c.id === id)?.name ?? id;
       const lines: string[] = [];
       for (const e of items) {
         // MCP 条目可能无公开仓库星数(stars 0),不显示 ★;状态文案区分"已安装/已添加"
@@ -534,7 +535,22 @@ const catalogCmd = leaf(
         lines.push(`          ${e.description}`);
       }
       if (!items.length) lines.push('(无匹配条目)');
-      lines.push(`共 ${items.length} 条;安装: ssw catalog install <owner/repo|MCP名>`);
+      lines.push(`共 ${items.length} 条;分类清单: ssw catalog categories;安装: ssw catalog install <owner/repo|MCP名>`);
+      return lines.join('\n');
+    });
+  }),
+);
+
+// 分类管理:列出全部分类及条目统计(--category 的 id 从这里查)
+leaf(catalogCmd.command('categories').description('列出推荐库分类及每类条目数(skill / MCP 细分)')).action(
+  wrap(async (cmd) => {
+    const cats = listCatalogCategories();
+    const total = cats.reduce((n, c) => n + c.count, 0);
+    out(cmd, { total, categories: cats }, () => {
+      const lines = cats.map(
+        (c) => `${c.id.padEnd(14)} ${c.name.padEnd(10)} ${String(c.count).padStart(3)} 条(skill ${c.skills} / MCP ${c.mcps})`,
+      );
+      lines.push(`共 ${cats.length} 个分类、${total} 条;按分类看: ssw catalog --category <id>`);
       return lines.join('\n');
     });
   }),

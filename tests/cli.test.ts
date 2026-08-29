@@ -52,9 +52,11 @@ async function cliFull(cwd: string | undefined, env: NodeJS.ProcessEnv, ...args:
 
 beforeAll(async () => {
   // 确保 dist/cli.js 是最新的(不依赖外部先跑 build)
-  // Windows 上 npm 是 npm.cmd;Node ≥18.20/20.12 起无 shell 直接 spawn .cmd 会抛 EINVAL
+  // Windows 上 npm 是 npm.cmd;Node ≥18.20/20.12 起无 shell 直接 spawn .cmd 会抛 EINVAL,
+  // 仅把名字换成 npm.cmd 并不能绕过——必须 shell:true 让 cmd.exe 来执行
   await execFileP(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'build'], {
     cwd: path.resolve(__dirname, '..'),
+    shell: process.platform === 'win32',
   });
 }, 120000);
 

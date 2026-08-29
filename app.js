@@ -904,13 +904,9 @@ function renderCatalog() {
       <input type="text" id="cat-q" placeholder="搜索名称 / 描述 / 仓库…" value="${esc(state.catalogQuery)}" />
     </div>
     <div class="cat-tabs">
-      <button class="cat-tab ${state.catalogCategory === '' ? 'active' : ''}" data-cat="">全部 (${state.catalog.items.length})</button>
-      ${state.catalog.categories.map((c) => {
-        // 条数优先用服务端统计;旧服务端无 count 字段时退回本地计数
-        const n = c.count ?? state.catalog.items.filter((e) => e.category === c.id).length;
-        return `
-        <button class="cat-tab ${state.catalogCategory === c.id ? 'active' : ''}" data-cat="${esc(c.id)}">${esc(c.name)} (${n})</button>`;
-      }).join('')}
+      <button class="cat-tab ${state.catalogCategory === '' ? 'active' : ''}" data-cat="">全部</button>
+      ${state.catalog.categories.map((c) => `
+        <button class="cat-tab ${state.catalogCategory === c.id ? 'active' : ''}" data-cat="${esc(c.id)}">${esc(c.name)}</button>`).join('')}
     </div>
     <div class="skills-grid" id="cat-list">${catalogCardsHtml()}</div>
   `;

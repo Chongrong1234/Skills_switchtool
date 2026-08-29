@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Skills SwitchTool</title>
+  <link rel="stylesheet" href="style.css" />
+  <script>
+    // 首屏绘制前恢复主题,避免深色默认下的浅色闪烁;非法值按深色处理
+    document.documentElement.dataset.theme =
+      localStorage.getItem('ssw-theme') === 'light' ? 'light' : 'dark';
+  </script>
+</head>
+<body>
+  <div id="app">
+    <!-- 左侧固定侧栏 -->
+    <aside id="sidebar">
+      <div class="brand">🛠 Skills SwitchTool</div>
+      <nav class="views">
+        <button class="view-btn" data-view="projects">项目</button>
+        <button class="view-btn" data-view="skills">技能库</button>
+        <button class="view-btn" data-view="mcps">MCP 服务</button>
+        <button class="view-btn" data-view="global">全局共享</button>
+        <button class="view-btn" data-view="catalog">推荐库</button>
+      </nav>
+      <div id="sidebar-projects" class="sidebar-list"></div>
+      <button id="btn-new-project" class="btn btn-primary btn-block">+ 新建项目</button>
+      <button id="btn-settings" class="btn btn-block">⚙ 设置</button>
+    </aside>
+
+    <!-- 主区 -->
+    <main id="main"></main>
+  </div>
+
+  <!-- 弹窗容器、toast 与 git 进度条 -->
+  <div id="modal-root"></div>
+  <div id="toast-root"></div>
+  <div id="progress-root"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -22,6 +22,13 @@ export interface CatalogCategory {
   name: string; // 显示名(CLI/TUI 用)
 }
 
+/** 分类统计:在分类定义上附加条数,供 GUI 标签页 / CLI 分类清单 / TUI 分类切换显示 */
+export interface CatalogCategoryStat extends CatalogCategory {
+  count: number;  // 该分类条目总数(skill + MCP)
+  skills: number; // 其中 skill 仓库条数
+  mcps: number;   // 其中 MCP server 条数
+}
+
 /** MCP 推荐条目的安装载荷:字段与 mcps.upsertMcp 对齐;env/headers 的值是占位符,用户需替换 */
 export interface CatalogMcpSpec {
   transport: 'stdio' | 'http' | 'sse';
@@ -178,6 +185,22 @@ export function listCatalog(filter: CatalogFilter = {}): CatalogEntry[] {
     );
   }
   return items;
+}
+
+/**
+ * 分类统计:每个分类的条目数(细分 skill / MCP),顺序与 CATALOG_CATEGORIES 一致。
+ * 静态数据内存计算,无 IO;GUI 标签页角标、`ssw catalog categories`、TUI 分类切换共用。
+ */
+export function listCatalogCategories(): CatalogCategoryStat[] {
+  return CATALOG_CATEGORIES.map((c) => {
+    const entries = CATALOG.filter((e) => e.category === c.id);
+    return {
+      ...c,
+      count: entries.length,
+      skills: entries.filter((e) => e.kind !== 'mcp').length,
+      mcps: entries.filter((e) => e.kind === 'mcp').length,
+    };
+  });
 }
 
 export interface CatalogEntryWithInstalled extends CatalogEntry {
