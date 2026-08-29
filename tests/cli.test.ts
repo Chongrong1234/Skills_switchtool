@@ -128,6 +128,30 @@ describe('ssw CLI', () => {
     expect(listAfter.projects).toHaveLength(0);
   });
 
+  it('skill init 支持粘贴内容:--file 读入完整 SKILL.md(frontmatter 兜底 name/desc),--content 与 --file 互斥', async () => {
+    // --file:从文件读入,name/desc 由 frontmatter 兜底
+    const src = path.join(projectDir, 'pasted.md');
+    await fs.writeFile(src, '---\nname: file-skill\ndescription: 文件导入\n---\n\n# 正文\n做 Z。\n', 'utf8');
+    const init = await cli('skill', 'init', '--file', src, '--json');
+    expect(init.code).toBe(0);
+    const skill = JSON.parse(init.stdout);
+    expect(skill.id).toBe('local:file-skill');
+    expect(skill.description).toBe('文件导入');
+    const written = await fs.readFile(path.join(sswHome, 'library', 'local__file-skill', 'SKILL.md'), 'utf8');
+    expect(written).toContain('# 正文');
+    expect(written.match(/^---$/gm)?.length).toBe(2); // 只有重新生成的一份 frontmatter
+
+    // --content 直接给文本(纯正文,需显式 name/desc)
+    const init2 = await cli('skill', 'init', '--name', 'inline-skill', '--desc', '内联内容', '--content', '## 只做这一件事', '--json');
+    expect(init2.code).toBe(0);
+    const written2 = await fs.readFile(path.join(sswHome, 'library', 'local__inline-skill', 'SKILL.md'), 'utf8');
+    expect(written2).toContain('## 只做这一件事');
+
+    // --content 与 --file 互斥 → 非零退出;缺 name/desc 且无内容 → 非零退出
+    expect((await cli('skill', 'init', '--name', 'x', '--desc', 'y', '--content', 'a', '--file', src)).code).not.toBe(0);
+    expect((await cli('skill', 'init', '--name', 'only-name')).code).not.toBe(0);
+  });
+
   it('apply 省略参数时使用当前激活项目', async () => {
     await cli('skill', 'init', '--name', 's1', '--desc', 'd1');
     await cli('project', 'create', '--name', 'p1', '--path', projectDir, '--agents', 'claude-code');

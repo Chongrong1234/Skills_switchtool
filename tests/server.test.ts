@@ -87,6 +87,19 @@ describe('server 校验(与 CLI 行为对齐)', () => {
     expect(bind.data.skills).toEqual([init.data.id]);
   });
 
+  it('skills/init 支持粘贴内容:frontmatter 兜底 name/description;content 非字符串 400', async () => {
+    // 只贴完整 SKILL.md,不带 name/description → 由 frontmatter 兜底
+    const only = await api('POST', '/api/skills/init', {
+      content: '---\nname: pasted-via-api\ndescription: 接口粘贴\n---\n\n# 正文\n',
+    });
+    expect(only.status).toBe(201);
+    expect(only.data.id).toBe('local:pasted-via-api');
+    expect(only.data.description).toBe('接口粘贴');
+    // content 非字符串 → 400;既无 name/desc 又无 content → 400(校验错误经 LibraryError 映射)
+    expect((await api('POST', '/api/skills/init', { name: 'x', description: 'y', content: 1 })).status).toBe(400);
+    expect((await api('POST', '/api/skills/init', {})).status).toBe(400);
+  });
+
   it('MCP 端点:add/list/bind/delete 全流程 + 校验', async () => {
     // 缺 name → 400;stdio 缺 command → 400(McpError 映射)
     expect((await api('POST', '/api/mcps', { command: 'npx' })).status).toBe(400);

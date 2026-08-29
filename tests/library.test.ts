@@ -53,6 +53,35 @@ describe('library', () => {
     await expect(initSkill('ok-name', '')).rejects.toThrow('description');
   });
 
+  it('initSkill 粘贴纯正文:直接作为 SKILL.md 正文,不用模板', async () => {
+    const entry = await initSkill('body-skill', '正文测试', '## 自定义内容\n\n按步骤做 X。');
+    const content = await fs.readFile(path.join(skillDirOf(entry), 'SKILL.md'), 'utf8');
+    expect(content).toContain('name: body-skill');
+    expect(content).toContain('## 自定义内容');
+    expect(content).not.toContain('使用说明'); // 未用默认模板
+    await expect(validateSkillDir(skillDirOf(entry))).resolves.toEqual({ name: 'body-skill', description: '正文测试' });
+  });
+
+  it('initSkill 粘贴完整 SKILL.md:剥掉原 frontmatter,name/description 可由其兜底;显式参数优先', async () => {
+    const pasted = '---\nname: pasted-skill\ndescription: 粘贴进来的描述\n---\n\n# 正文\n\n做 Y。\n';
+    // name/description 缺省时从粘贴内容的 frontmatter 兜底
+    const entry = await initSkill('', '', pasted);
+    expect(entry.id).toBe('local:pasted-skill');
+    const content = await fs.readFile(path.join(skillDirOf(entry), 'SKILL.md'), 'utf8');
+    const fm = parseFrontmatter(content);
+    expect(fm?.name).toBe('pasted-skill');
+    expect(fm?.description).toBe('粘贴进来的描述');
+    expect(content).toContain('# 正文');
+    // 只有重新生成的一份 frontmatter
+    expect(content.match(/^---$/gm)?.length).toBe(2);
+    // 显式参数覆盖粘贴内容里的 frontmatter
+    const entry2 = await initSkill('explicit-name', '显式描述', pasted);
+    const c2 = await fs.readFile(path.join(skillDirOf(entry2), 'SKILL.md'), 'utf8');
+    expect(c2).toContain('name: explicit-name');
+    expect(c2).not.toContain('pasted-skill');
+    expect(c2).toContain('# 正文');
+  });
+
   it('local 安装会复制目录入中央库', async () => {
     // 造一个本地 skill 源目录
     const src = path.join(tmp, 'outside', 'cool-skill');
