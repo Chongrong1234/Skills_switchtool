@@ -4,7 +4,7 @@
 
 ## 项目概述
 
-**Skills SwitchTool**(`skills-switchtool`,v1.1.0):项目中心化的 Agent Skills 管理工具。交互模式仿照 cc-switch:**中央存储 + 切换 + 写入目标工具配置位置 + 快照可回滚**。
+**Skills SwitchTool**(`skills-switchtool`,v1.2.0):项目中心化的 Agent Skills 管理工具。交互模式仿照 cc-switch:**中央存储 + 切换 + 写入目标工具配置位置 + 快照可回滚**。
 
 核心概念:
 
@@ -54,7 +54,8 @@ src/
                          #   Windows 杀软瞬时持锁的 EPERM)、readJsonSafe(损坏容错)
     library.ts           # 中央库:github→git clone --depth 1(可选 subdir 子目录为扫描根,registerSkillsIn 可单测;
                          #   subdir 只允许 '/' 分隔,显式拒绝 '\' 与 ':'——防 Windows 路径穿越到库外被递归删除)、
-                         #   local→复制、卸载、更新、initSkill 脚手架;
+                         #   local→复制、卸载、更新、initSkill 脚手架(可选 content:粘贴的完整 SKILL.md
+                         #   剥原 frontmatter 重新生成,name/description 可由其兜底,显式参数优先);
                          #   adoptFromAgent:收养 agent 用户级/项目级目录里既有的 skills 进库
                          #   (跳过指向库内的 symlink 与同名条目,installFromLocal 的"已在库中"按跳过处理);
                          #   git 调用统一走 runGit(spawn 流式读 stderr):120s 超时(SSW_GIT_TIMEOUT_MS 覆盖)
@@ -124,6 +125,7 @@ src/
                          #   mcp list/add/remove(--command 与 --url 二选一,--env/--header 逗号分隔 KEY=V,--cwd 仅部分 agent 支持)
                          #   + project bind-mcp;catalog install 按条目 kind 分流:skill 整仓安装,mcp 写注册表;
                          #   catalog categories 分类清单(count/skills/mcps 统计,--category 的 id 来源);
+                         #   skill init [--name --desc] [--content 文本|--file 路径](粘贴现成 SKILL.md 均可);
                          #   skill adopt --agent <id> [--user|--path];global show/bind/agents/apply/unapply/rollback;
                          #   profile export [--file](警告打 stderr)/ import <file>(导入 failed 非零时退出码 1)
   tui.ts                 # 终端交互面板:项目列表 + ↑↓/Enter/a/u/r/s/m/g/c/q 按键(g 全局共享视图内 a/u/r
@@ -162,7 +164,7 @@ electron-builder.yml     # 打包配置:Linux AppImage + Windows NSIS(中文安�
 - 测试文件在 `tests/*.test.ts`,每个 core 模块一个对应文件,外加:`platform.test.ts`(Windows 专项:symlink EPERM 降级 copy、git 不在 PATH 的可读报错、Windows 保留名拒绝)、`server.test.ts`(起真实 HTTP 服务验证校验逻辑与 CLI 对齐)、`cli.test.ts`(端到端,用 `child_process` 跑**编译产物** `dist/cli.js`,`beforeAll` 里先自动跑 `npm run build`;Windows 上改用 `npm.cmd` 且必须带 `shell: true`——Node ≥18.20/20.12 起无 shell 直接 spawn `.cmd` 会抛 EINVAL,只换名字绕不过)。
 - **隔离约定(必须遵守)**:测试在 `beforeEach` 里把 `process.env.SSW_HOME` 指向 `fs.mkdtemp` 临时目录,`afterEach` 里删除该环境变量并 `rm` 临时目录——绝不触碰真实 `~/.skills-switch`。涉及真实文件系统的测试保持串行(这也是 `pool: 'forks'` 的原因)。`global.test.ts` 额外用 `vi.spyOn(os, 'homedir')` 指到临时目录,绝不触碰真实 home。
 - 网络相关测试注入假 `fetch`(`recommendForProject(path, name, fetchImpl)` 的第三参),不打真实 GitHub API。
-- 提交改动前跑 `npm test`,当前基线:**15 个文件 146 个用例全绿**。push/PR 由 `.github/workflows/ci.yml` 跑三平台 × Node 18/20/22。
+- 提交改动前跑 `npm test`,当前基线:**15 个文件 150 个用例全绿**。push/PR 由 `.github/workflows/ci.yml` 跑三平台 × Node 18/20/22。
 
 ## 安全注意事项
 
