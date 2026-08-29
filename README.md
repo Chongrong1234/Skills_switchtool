@@ -60,7 +60,7 @@ ssw project switch api-server    # 激活项目 → 该项目的技能组合自�
 | 🌐 **全局共享** | 项目配方之外,还可把选定 skills 物化到各 agent 的**用户级**目录(`~/.claude/skills` 等):一次配置,该 agent 的所有项目共享 |
 | 📦 **配置库整体搬家** | `ssw profile export/import` 把技能库 + MCP + 项目档案 + 全局共享打成单文件,跨机器、跨平台共享同一份配置;导入幂等 |
 | 🤝 **收养既有 skills** | `ssw skill adopt` 把各 agent 目录里已存在的 skills 一键收进中央库,先纳管再统一分发 |
-| 🔍 **智能推荐 + 内置推荐库** | 识别项目技术栈推荐 GitHub 高 star skills;另内置 52 个精选 skill 仓库 + 14 个常用 MCP server / 11 大类,离线可浏览,一键安装;断网安静降级 |
+| 🔍 **智能推荐 + 内置推荐库** | 识别项目技术栈推荐 GitHub 高 star skills;另内置 99 个精选 skill 仓库 + 25 个常用 MCP server / 13 大类(分类带条目统计),离线可浏览,一键安装;断网安静降级 |
 | 🖥️ **两种打开方式** | Electron 桌面 App 点点点、纯 CLI/终端面板——同一份核心,同一份状态 |
 | 🪶 **极致轻量** | 运行时仅 2 个依赖(express + commander);CLI 可打成零依赖单文件,拷到服务器即用 |
 
@@ -109,7 +109,7 @@ chmod +x "release/Skills SwitchTool-"*.AppImage
 ```bash
 skills    # 或 ssw —— ↑↓ 选项目,Enter 切换并 apply,
           # a apply / u unapply / r 回滚 / s 技能库 / m MCP 库
-          # g 全局共享(视图内 a/u/r 作用于全局) / c 推荐库 / q 退出
+          # g 全局共享(视图内 a/u/r 作用于全局) / c 推荐库(视图内 c 切换分类) / q 退出
 ```
 
 非 TTY(管道、脚本)下裸跑则打印帮助。常用子命令:
@@ -130,10 +130,12 @@ ssw skill list
 ssw skill add --github <owner/repo 或 URL> [--subdir skills]   # 合集仓库用 --subdir 指定扫描根
 ssw skill add --local /path/to/skill
 ssw skill init --name X --desc "..."    # 自建 skill 脚手架
+ssw skill init --file SKILL.md          # 粘贴/导入现成 SKILL.md(--content 直接给文本;frontmatter 自动带出 name/desc)
 ssw skill remove <id> / update [id]
 ssw skill export / import <code>        # 迁移码:批量搬家 skills
 ssw skill adopt --agent claude-code [--user|--path .]   # 把 agent 目录里既有的 skills 收进中央库
 ssw catalog [--category dev] [--q 关键词]   # 内置推荐库浏览(skill + MCP)
+ssw catalog categories                  # 分类清单:每类条目数(skill/MCP 细分)
 ssw catalog install <owner/repo|mcp名>   # 一键安装推荐库条目
 ssw recommend [--path /abs/path] [--keywords a,b,c]            # 按技术栈智能推荐
 ssw global show / bind <skillId...> / agents <agentId...> [--mode symlink|copy]  # 全局(用户级)共享

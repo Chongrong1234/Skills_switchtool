@@ -266,11 +266,14 @@ export function createApp(): express.Express {
     res.json({ ok: true, alsoRemoved: r.alsoRemoved });
   }));
 
-  // 自建 skill 脚手架
+  // 自建 skill 脚手架;content 可选:粘贴的完整 SKILL.md(frontmatter 兜底 name/description)或纯正文
   app.post('/api/skills/init', h(async (req, res) => {
-    const { name, description } = req.body ?? {};
-    if (!name || !description) return void res.status(400).json({ error: 'name 与 description 必填' });
-    const entry = await initSkill(name, description);
+    const { name, description, content } = req.body ?? {};
+    if (content !== undefined && typeof content !== 'string') {
+      return void res.status(400).json({ error: 'content 必须是字符串' });
+    }
+    // name/description 的具体校验(含 frontmatter 兜底)在 initSkill 内,LibraryError 统一映射 400
+    const entry = await initSkill(name ?? '', description ?? '', content);
     res.status(201).json(entry);
   }));
 

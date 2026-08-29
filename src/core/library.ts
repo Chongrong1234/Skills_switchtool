@@ -496,10 +496,28 @@ export async function updateSkill(id: string): Promise<SkillEntry> {
   return installFromLocal(entry.source.uri);
 }
 
-/** 自建脚手架:在中央库生成一个合法 skill 并登记 */
-export async function initSkill(name: string, description: string): Promise<SkillEntry> {
+/**
+ * 自建脚手架:在中央库生成一个合法 skill 并登记。
+ * content 可选:用户粘贴/编辑的 SKILL.md 内容(创建界面留的"复制粘贴"入口):
+ * - 带 frontmatter 的完整 SKILL.md:剥掉原 frontmatter(以校验过的 name/description 重新生成),
+ *   其中 name/description 可作缺省值(显式参数优先)——贴一份现成 SKILL.md 即可零填写创建;
+ * - 纯正文:直接作为正文。
+ * 缺省生成引导模板。
+ */
+export async function initSkill(name: string, description: string, content?: string): Promise<SkillEntry> {
+  let body: string | undefined;
+  if (content?.trim()) {
+    const fm = parseFrontmatter(content);
+    if (fm) {
+      name = name || fm.name || '';
+      description = description || fm.description || '';
+      body = content.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '').replace(/^[\r\n]+/, '');
+    } else {
+      body = content;
+    }
+  }
   assertValidSkillName(name);
-  if (!description) throw new LibraryError('description 不能为空');
+  if (!description) throw new LibraryError('description 不能为空(或在粘贴内容的 frontmatter 中提供)');
   const id = `local:${name}`;
   const dest = path.join(libraryDir(), `local__${name}`);
   await fs.mkdir(dest, { recursive: true });
@@ -508,13 +526,13 @@ name: ${name}
 description: ${description}
 ---
 
-# ${name}
+${body ?? `# ${name}
 
 ${description}
 
 ## 使用说明
 
-在这里编写该 skill 的具体指令内容。
+在这里编写该 skill 的具体指令内容。`}
 `;
   await fs.writeFile(path.join(dest, 'SKILL.md'), skillMd, 'utf8');
   const entry: SkillEntry = {

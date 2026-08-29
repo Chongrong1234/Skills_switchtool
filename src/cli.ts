@@ -386,12 +386,28 @@ leaf(
 leaf(
   skillCmd
     .command('init')
-    .description('自建 skill 脚手架(生成合法 SKILL.md)')
-    .requiredOption('--name <name>', 'skill 名称(小写字母/数字/连字符)')
-    .requiredOption('--desc <description>', 'skill 描述'),
+    .description('自建 skill 脚手架(生成合法 SKILL.md;可粘贴/导入现成内容)')
+    .option('--name <name>', 'skill 名称(小写字母/数字/连字符;粘贴内容带 frontmatter 时可省略)')
+    .option('--desc <description>', 'skill 描述(粘贴内容带 frontmatter 时可省略)')
+    .option('--content <text>', 'SKILL.md 内容(粘贴的完整文件或纯正文;与 --file 二选一)')
+    .option('--file <path>', '从文件读入 SKILL.md 内容(与 --content 二选一)'),
 ).action(
-  wrap(async (cmd, opts: { name: string; desc: string }) => {
-    const entry = await initSkill(opts.name, opts.desc);
+  wrap(async (cmd, opts: { name?: string; desc?: string; content?: string; file?: string }) => {
+    if (opts.content !== undefined && opts.file !== undefined) {
+      throw new Error('--content 与 --file 只能二选一');
+    }
+    let content = opts.content;
+    if (opts.file !== undefined) {
+      try {
+        content = await fs.readFile(path.resolve(opts.file), 'utf8');
+      } catch (err) {
+        throw new Error(`读取 --file 失败: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    if (content === undefined && (!opts.name || !opts.desc)) {
+      throw new Error('必须指定 --name 与 --desc(或用 --content/--file 提供带 frontmatter 的 SKILL.md)');
+    }
+    const entry = await initSkill(opts.name ?? '', opts.desc ?? '', content);
     out(cmd, entry, () => `已创建 skill 脚手架: ${entry.id}(目录在库中,可继续编辑)`);
   }),
 );

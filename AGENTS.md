@@ -89,11 +89,13 @@ src/
                          #   单 skill >20MB 跳过并告警);导入幂等(github 按仓重克隆+upsert 原条目保绑定、
                          #   local 落库带路径穿越防护、项目 id 冲突换新 id、activeProjectId/全局档案仅空缺时采用);
                          #   installFn 可注入(测试)
-    catalog.ts           # 内置精选推荐库:52 个高 star skill 仓库 + 14 个常用 MCP server / 11 大类
-                         #   (dev/research/writing/marketing/product/design/media/data-ai/devops/security/productivity,
-                         #   分类无空档);静态数据离线可用,stars 为收录时快照(无公开仓库的托管 MCP 记 0);
-                         #   条目 subdir 适配合集仓库(skills/ 等子目录扫描根);kind:'mcp' 条目的 mcp 载荷
-                         #   与 upsertMcp 对齐(env/headers 密钥为占位符),installed 标记按 mcps.json 同名判断
+    catalog.ts           # 内置精选推荐库:99 个高 star skill 仓库 + 25 个常用 MCP server / 13 大类
+                         #   (dev/research/writing/marketing/product/design/media/knowledge/data-ai/robotics/
+                         #   devops/security/productivity,分类无空档);静态数据离线可用,stars 为收录时快照
+                         #   (无公开仓库的托管 MCP 记 0);条目 subdir 适配合集仓库(skills/ 等子目录扫描根);
+                         #   kind:'mcp' 条目的 mcp 载荷与 upsertMcp 对齐(env/headers 密钥为占位符),
+                         #   installed 标记按 mcps.json 同名判断;listCatalogCategories() 分类统计
+                         #   (count/skills/mcps)供 GUI 标签角标、CLI catalog categories、TUI 分类切换共用
   adapters/
     types.ts             # AgentAdapter 接口(id/displayName/detect/projectSkillsDir/userSkillsDir/capabilities/mcp?/validate?);
                          #   userSkillsDir() 是全局共享 apply 的目标(用户级 skills 目录);
@@ -121,10 +123,12 @@ src/
                          #   project create / recommend 的 --path 缺省取当前工作目录;
                          #   mcp list/add/remove(--command 与 --url 二选一,--env/--header 逗号分隔 KEY=V,--cwd 仅部分 agent 支持)
                          #   + project bind-mcp;catalog install 按条目 kind 分流:skill 整仓安装,mcp 写注册表;
+                         #   catalog categories 分类清单(count/skills/mcps 统计,--category 的 id 来源);
                          #   skill adopt --agent <id> [--user|--path];global show/bind/agents/apply/unapply/rollback;
                          #   profile export [--file](警告打 stderr)/ import <file>(导入 failed 非零时退出码 1)
   tui.ts                 # 终端交互面板:项目列表 + ↑↓/Enter/a/u/r/s/m/g/c/q 按键(g 全局共享视图内 a/u/r
-                         #   作用于全局;技能库/MCP/推荐库只读);stdin raw 模式 + ANSI 整帧重绘
+                         #   作用于全局;推荐库视图内 c 循环切换分类过滤;技能库/MCP/推荐库只读);
+                         #   stdin raw 模式 + ANSI 整帧重绘
   version.ts             # 版本号单一来源:运行时读 ../package.json(src/ 与 dist/ 都恰在根下一层);
                          #   esbuild 打包单文件时 define 注入 __SSW_VERSION__
 electron/main.mjs        # Electron 主进程:动态 import dist/serve.js,127.0.0.1+端口 0,BrowserWindow 加载
@@ -158,7 +162,7 @@ electron-builder.yml     # 打包配置:Linux AppImage + Windows NSIS(中文安�
 - 测试文件在 `tests/*.test.ts`,每个 core 模块一个对应文件,外加:`platform.test.ts`(Windows 专项:symlink EPERM 降级 copy、git 不在 PATH 的可读报错、Windows 保留名拒绝)、`server.test.ts`(起真实 HTTP 服务验证校验逻辑与 CLI 对齐)、`cli.test.ts`(端到端,用 `child_process` 跑**编译产物** `dist/cli.js`,`beforeAll` 里先自动跑 `npm run build`;Windows 上改用 `npm.cmd` 且必须带 `shell: true`——Node ≥18.20/20.12 起无 shell 直接 spawn `.cmd` 会抛 EINVAL,只换名字绕不过)。
 - **隔离约定(必须遵守)**:测试在 `beforeEach` 里把 `process.env.SSW_HOME` 指向 `fs.mkdtemp` 临时目录,`afterEach` 里删除该环境变量并 `rm` 临时目录——绝不触碰真实 `~/.skills-switch`。涉及真实文件系统的测试保持串行(这也是 `pool: 'forks'` 的原因)。`global.test.ts` 额外用 `vi.spyOn(os, 'homedir')` 指到临时目录,绝不触碰真实 home。
 - 网络相关测试注入假 `fetch`(`recommendForProject(path, name, fetchImpl)` 的第三参),不打真实 GitHub API。
-- 提交改动前跑 `npm test`,当前基线:**15 个文件 143 个用例全绿**。push/PR 由 `.github/workflows/ci.yml` 跑三平台 × Node 18/20/22。
+- 提交改动前跑 `npm test`,当前基线:**15 个文件 146 个用例全绿**。push/PR 由 `.github/workflows/ci.yml` 跑三平台 × Node 18/20/22。
 
 ## 安全注意事项
 

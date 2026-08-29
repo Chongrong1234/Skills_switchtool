@@ -608,6 +608,8 @@ function openInstallLocalModal() {
 function openInitSkillModal() {
   const modal = openModal(`
     <h2>新建我的 Skill</h2>
+    <div class="form-row"><label>SKILL.md 内容(可选;直接粘贴别处复制的完整 SKILL.md,可继续编辑修改,frontmatter 会自动带出名称与描述;留空则生成模板)</label>
+      <textarea id="init-content" rows="10" placeholder="---&#10;name: my-skill&#10;description: 这个 skill 做什么&#10;---&#10;&#10;在这里粘贴或编写指令内容…"></textarea></div>
     <div class="form-row"><label>名称(小写字母/数字/连字符)</label>
       <input type="text" id="init-name" placeholder="my-skill" /></div>
     <div class="form-row"><label>描述</label>
@@ -617,16 +619,31 @@ function openInitSkillModal() {
       <button class="btn btn-primary" id="m-ok">创建</button>
     </div>
   `);
+  // 粘贴完整 SKILL.md 时,解析 frontmatter 自动带出名称/描述(已手填的不覆盖)
+  modal.querySelector('#init-content').addEventListener('input', () => {
+    const m = modal.querySelector('#init-content').value.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+    if (!m) return;
+    const fm = {};
+    for (const line of m[1].split(/\r?\n/)) {
+      const kv = line.match(/^([A-Za-z0-9_-]+)\s*:\s*(.*)$/);
+      if (kv) fm[kv[1]] = kv[2].trim().replace(/^["']|["']$/g, '');
+    }
+    const nameInput = modal.querySelector('#init-name');
+    const descInput = modal.querySelector('#init-desc');
+    if (fm.name && !nameInput.value.trim()) nameInput.value = fm.name;
+    if (fm.description && !descInput.value.trim()) descInput.value = fm.description;
+  });
   modal.querySelector('#m-cancel').addEventListener('click', closeModal);
   modal.querySelector('#m-ok').addEventListener('click', () => run(async () => {
     const name = modal.querySelector('#init-name').value.trim();
     const description = modal.querySelector('#init-desc').value.trim();
-    if (!name || !description) return toast('名称与描述必填', 'err');
-    await api('POST', '/api/skills/init', { name, description });
+    const content = modal.querySelector('#init-content').value;
+    if (!content.trim() && (!name || !description)) return toast('名称与描述必填(或粘贴带 frontmatter 的 SKILL.md)', 'err');
+    await api('POST', '/api/skills/init', { name, description, ...(content.trim() ? { content } : {}) });
     await loadAll();
     closeModal();
     render();
-    toast('脚手架已创建,可在库目录中继续编辑');
+    toast('已创建,可在库目录中继续编辑');
   }));
 }
 
