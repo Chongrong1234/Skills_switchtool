@@ -158,8 +158,9 @@ describe('ssw CLI', () => {
     const r = await cli('project', 'show', 'dup');
     expect(r.code).not.toBe(0);
     expect(r.stderr).toContain('匹配到多个项目');
-    expect(r.stderr).toContain('/tmp/a');
-    expect(r.stderr).toContain('/tmp/b');
+    // CLI 存的是 path.resolve 后的绝对路径;Windows 上 /tmp/a 会解析到当前盘符(形如 D:\tmp\a)
+    expect(r.stderr).toContain(path.resolve('/tmp/a'));
+    expect(r.stderr).toContain(path.resolve('/tmp/b'));
   });
 
   it('缺必填参数时报错且退出码非零', async () => {
@@ -171,7 +172,8 @@ describe('ssw CLI', () => {
   it('project create 省略 --path 时取当前工作目录', async () => {
     const r = await cliIn(projectDir, 'project', 'create', '--name', 'cwdproj', '--agents', 'claude-code', '--json');
     expect(r.code).toBe(0);
-    expect(JSON.parse(r.stdout).path).toBe(await fs.realpath(projectDir));
+    // 两侧都过 realpath:Windows runner 上 TEMP 带 8.3 短名(RUNNER~1),cwd 原样保留短名,realpath 展开成长名
+    expect(await fs.realpath(JSON.parse(r.stdout).path)).toBe(await fs.realpath(projectDir));
   });
 
   it('agents 子命令列出适配器(--json)', async () => {
@@ -346,5 +348,26 @@ describe('ssw CLI', () => {
     } finally {
       await fs.rm(fakeHome, { recursive: true, force: true });
     }
+  });
+
+  it('catalog categories:分类统计;catalog --category 按分类过滤', async () => {
+    // --json:分类表带 count/skills/mcps 细分,总数一致
+    const r = await cli('catalog', 'categories', '--json');
+    expect(r.code).toBe(0);
+    const data = JSON.parse(r.stdout);
+    expect(data.categories.length).toBeGreaterThan(0);
+    for (const c of data.categories) expect(c.count).toBe(c.skills + c.mcps);
+    expect(data.categories.reduce((n: number, c: { count: number }) => n + c.count, 0)).toBe(data.total);
+
+    // 纯文本输出含分类 id 与名称;--category 过滤只含该分类
+    const plain = await cli('catalog', 'categories');
+    expect(plain.code).toBe(0);
+    expect(plain.stdout).toContain('dev');
+    const dev = data.categories[0];
+    const filtered = await cli('catalog', '--category', dev.id, '--json');
+    expect(filtered.code).toBe(0);
+    const items = JSON.parse(filtered.stdout).items;
+    expect(items.length).toBe(dev.count);
+    expect(items.every((e: { category: string }) => e.category === dev.id)).toBe(true);
   });
 });
