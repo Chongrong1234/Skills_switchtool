@@ -6,7 +6,7 @@
 
 ### 按项目管理 Agent Skills:一个项目一套技能组合,模型不再调错技能
 
-[![Version](https://img.shields.io/badge/version-0.1.0-blue.svg)](https://github.com/Chongrong1234/Skills_switchtool)
+[![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)](https://github.com/Chongrong1234/Skills_switchtool)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](https://nodejs.org)
 [![Runtime Deps](https://img.shields.io/badge/runtime%20deps-2-orange.svg)](package.json)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%C2%B7%20Windows%20%C2%B7%20macOS-lightgrey.svg)](electron-builder.yml)

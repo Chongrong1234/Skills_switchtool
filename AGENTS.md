@@ -4,7 +4,7 @@
 
 ## 项目概述
 
-**Skills SwitchTool**(`skills-switchtool`,v0.1.0):项目中心化的 Agent Skills 管理工具。交互模式仿照 cc-switch:**中央存储 + 切换 + 写入目标工具配置位置 + 快照可回滚**。
+**Skills SwitchTool**(`skills-switchtool`,v1.1.0):项目中心化的 Agent Skills 管理工具。交互模式仿照 cc-switch:**中央存储 + 切换 + 写入目标工具配置位置 + 快照可回滚**。
 
 核心概念:
 
@@ -170,4 +170,4 @@ electron-builder.yml     # 打包配置:Linux AppImage + Windows NSIS(中文安�
 - Express 服务**无认证**:仅由桌面 App 进程内启动(`startServer(port, '127.0.0.1')`),不暴露网卡;若未来重新开放独立 Web 模式,需自行限制监听范围或套带认证的反向代理。
 - 不要把 `SSW_HOME` 指向的目录当作可信输入边界——它存放的就是本工具的全部状态,损坏时要容错而不是崩溃。
 
-每次修改界面或增加功能，要同步增加所有release版本功能,并在确认正确后直接提交
+每次修改界面或增加功能，要同步增加所有release版本功能,并在确认正确后直接提交，核心产品是appimage和cli，不需要做web
