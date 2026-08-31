@@ -32,6 +32,11 @@ export function globalFile(): string {
   return path.join(sswHome(), 'global.json');
 }
 
+/** AI 推荐配置(模型/baseUrl/apiKey),见 core/ai.ts */
+export function aiFile(): string {
+  return path.join(sswHome(), 'ai.json');
+}
+
 export function snapshotsDir(): string {
   return path.join(sswHome(), 'snapshots');
 }

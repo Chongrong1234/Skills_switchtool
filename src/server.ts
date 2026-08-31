@@ -34,6 +34,15 @@ import { listCatalogCategories, listCatalogWithInstalled } from './core/catalog.
 import { exportSkillsCode, importSkillsCode, parseSkillsCode } from './core/migrate.js';
 import { listMcps, McpError, removeMcp, upsertMcp } from './core/mcps.js';
 import { recommendForProject } from './core/recommend.js';
+import {
+  AiError,
+  AI_PRESETS,
+  aiRecommendSkills,
+  readAiConfig,
+  testAiConnection,
+  toPublicConfig,
+  updateAiConfig,
+} from './core/ai.js';
 import { readRegistry } from './core/registry.js';
 import { rollback } from './core/snapshot.js';
 import { runDoctor } from './core/doctor.js';
@@ -302,6 +311,37 @@ export function createApp(): express.Express {
     res.json(await recommendForProject(project.path, project.name));
   }));
 
+  // ---- AI 推荐(模型读本地技能库 + 用户需求;配置在设置弹窗 / ssw ai config)----
+  // GET 只回掩码后的配置 + 可选预设,绝不回 apiKey 原文
+  app.get('/api/ai/config', h(async (_req, res) => {
+    res.json({ ...toPublicConfig(await readAiConfig()), presets: AI_PRESETS });
+  }));
+
+  // PUT:undefined 字段保持不变;apiKey 传空串 = 显式清除(校验错误抛 AiError → 400)
+  app.put('/api/ai/config', h(async (req, res) => {
+    const { baseUrl, model, apiKey } = req.body ?? {};
+    for (const [k, v] of Object.entries({ baseUrl, model, apiKey })) {
+      if (v !== undefined && typeof v !== 'string') {
+        return void res.status(400).json({ error: `${k} 必须是字符串` });
+      }
+    }
+    res.json({ ...toPublicConfig(await updateAiConfig({ baseUrl, model, apiKey })), presets: AI_PRESETS });
+  }));
+
+  // 测试连接:body 里的字段优先于已存配置(保存前先测);走与推荐相同的 chat/completions 路径
+  app.post('/api/ai/test', h(async (req, res) => {
+    const { baseUrl, model, apiKey } = req.body ?? {};
+    res.json(await testAiConnection({ baseUrl, model, apiKey }));
+  }));
+
+  app.post('/api/ai/recommend', h(async (req, res) => {
+    const { requirement, projectName } = req.body ?? {};
+    if (!requirement || typeof requirement !== 'string') {
+      return void res.status(400).json({ error: 'requirement 必填(一两句话描述开发需求)' });
+    }
+    res.json(await aiRecommendSkills({ requirement, projectName: typeof projectName === 'string' ? projectName : undefined }));
+  }));
+
   // 收养:把 agent 目录(user 级或项目级)里已有的 skills 复制进中央库(逆向于 apply)
   app.post('/api/skills/adopt', h(async (req, res) => {
     const { agent, scope, projectPath } = req.body ?? {};
@@ -369,8 +409,9 @@ export function createApp(): express.Express {
     const msg =
       err instanceof LibraryError ? err.message :
       err instanceof McpError ? err.message :
+      err instanceof AiError ? err.message :
       err instanceof Error ? err.message : String(err);
-    const status = err instanceof LibraryError || err instanceof McpError ? 400 : 500;
+    const status = err instanceof LibraryError || err instanceof McpError || err instanceof AiError ? 400 : 500;
     res.status(status).json({ error: msg });
   });
 

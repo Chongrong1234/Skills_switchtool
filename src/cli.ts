@@ -32,6 +32,14 @@ import {
 } from './core/projects.js';
 import { listMcps, removeMcp, upsertMcp } from './core/mcps.js';
 import { recommendForProject } from './core/recommend.js';
+import {
+  AI_PRESETS,
+  aiRecommendSkills,
+  readAiConfig,
+  testAiConnection,
+  toPublicConfig,
+  updateAiConfig,
+} from './core/ai.js';
 import { CATALOG, listCatalogCategories, listCatalogWithInstalled } from './core/catalog.js';
 import { exportSkillsCode, importSkillsCode, parseSkillsCode } from './core/migrate.js';
 import { rollback } from './core/snapshot.js';
@@ -182,9 +190,10 @@ leaf(
     .requiredOption('--name <name>', '项目名称')
     .option('--path <path>', '项目根目录(缺省取当前工作目录)')
     .option('--agents <ids>', '目标 agents,逗号分隔(如 claude-code,kimi-code;缺省取本机检测到的 agent)')
-    .option('--mode <mode>', 'apply 模式: symlink|copy', 'symlink'),
+    .option('--mode <mode>', 'apply 模式: symlink|copy', 'symlink')
+    .option('--ai <requirement>', '用 AI 读技能库,按开发需求推荐并绑定技能(需先 ssw ai config 配置)'),
 ).action(
-  wrap(async (cmd, opts: { name: string; path?: string; agents?: string; mode: string }) => {
+  wrap(async (cmd, opts: { name: string; path?: string; agents?: string; mode: string; ai?: string }) => {
     if (!['symlink', 'copy'].includes(opts.mode)) {
       throw new Error('--mode 只能是 symlink 或 copy');
     }
@@ -209,12 +218,35 @@ leaf(
     // 允许同名项目,但同名会让 name 寻址歧义,主动提醒
     const { projects } = await listProjects();
     const sameName = projects.filter((x) => x.name === p.name && x.id !== p.id);
-    out(cmd, p, () =>
-      `已创建项目 ${p.name}(${p.id})` +
-      (usedDefaultAgents ? `\n目标 agents 取本机检测结果: ${agentIds.join(', ')}` : '') +
-      (sameName.length ? `\n警告: 已存在同名项目「${p.name}」,后续寻址建议用 id` : '') +
-      `\n下一步: ssw project bind ${p.id} <skillId|名称...> 绑定技能,然后 ssw project switch ${p.id}`,
-    );
+    // --ai:让模型读技能库按需求推荐,推荐结果直接并入新项目技能集(新项目原本是空集,等价整体替换)
+    let aiRec: Awaited<ReturnType<typeof aiRecommendSkills>> | null = null;
+    if (opts.ai) {
+      aiRec = await aiRecommendSkills({ requirement: opts.ai, projectName: opts.name });
+      if (aiRec.items.length) {
+        const merged = [...new Set([...p.skills, ...aiRec.items.map((s) => s.id)])];
+        await setProjectSkills(p.id, merged);
+        p.skills = merged;
+      }
+    }
+    out(cmd, { ...p, aiRecommend: aiRec }, () => {
+      let s =
+        `已创建项目 ${p.name}(${p.id})` +
+        (usedDefaultAgents ? `\n目标 agents 取本机检测结果: ${agentIds.join(', ')}` : '') +
+        (sameName.length ? `\n警告: 已存在同名项目「${p.name}」,后续寻址建议用 id` : '');
+      if (aiRec) {
+        s += `\nAI 推荐(${aiRec.model ?? '-'}):`;
+        if (aiRec.items.length) {
+          s += '\n' + aiRec.items.map((r) => `  ✓ ${r.id}  ${r.name}${r.reason ? `  — ${r.reason}` : ''}`).join('\n') +
+            `\n已自动绑定 ${aiRec.items.length} 个技能到本项目`;
+        } else {
+          s += ` ${aiRec.message ?? '(无结果)'}`;
+        }
+      }
+      return s +
+        (aiRec?.items.length
+          ? `\n下一步: ssw project apply ${p.id} 使配置生效(不满意可 ssw project bind 调整)`
+          : `\n下一步: ssw project bind ${p.id} <skillId|名称...> 绑定技能,然后 ssw project switch ${p.id}`);
+    });
   }),
 );
 
@@ -787,6 +819,91 @@ leaf(
     });
     // 有失败项时退出码非零,方便脚本判断(同 skill import 约定)
     if (r.failed.length) process.exitCode = 1;
+  }),
+);
+
+// ---------- AI 推荐(模型读技能库 + 开发需求;配置存 ai.json)----------
+const aiCmd = program.command('ai').description('AI 技能推荐:配置模型(baseUrl/apiKey/model,支持中转站),按开发需求从库中推荐技能');
+
+leaf(
+  aiCmd
+    .command('config')
+    .description('查看/设置 AI 配置(不带选项 = 查看;--preset 一键套用预设端点与模型)')
+    .option('--preset <id>', '预设:kimi|deepseek|openai|openrouter(套用其 baseUrl 与首个模型)')
+    .option('--base-url <url>', 'OpenAI 兼容端点(官方或中转站地址)')
+    .option('--model <name>', '模型名')
+    .option('--api-key <key>', 'API Key(明文存本机数据目录;传空串清除)'),
+).action(
+  wrap(async (cmd, opts: { preset?: string; baseUrl?: string; model?: string; apiKey?: string }) => {
+    const hasSet = opts.preset !== undefined || opts.baseUrl !== undefined || opts.model !== undefined || opts.apiKey !== undefined;
+    if (hasSet) {
+      const patch: { baseUrl?: string; model?: string; apiKey?: string } = {};
+      if (opts.preset !== undefined) {
+        const preset = AI_PRESETS.find((x) => x.id === opts.preset);
+        if (!preset) throw new Error(`未知预设: ${opts.preset}(可用: ${AI_PRESETS.map((x) => x.id).join(', ')})`);
+        patch.baseUrl = preset.baseUrl;
+        patch.model = preset.models[0];
+      }
+      // 显式参数覆盖预设(顺序:先套预设,再叠显式值)
+      if (opts.baseUrl !== undefined) patch.baseUrl = opts.baseUrl;
+      if (opts.model !== undefined) patch.model = opts.model;
+      if (opts.apiKey !== undefined) patch.apiKey = opts.apiKey;
+      const cfg = await updateAiConfig(patch);
+      out(cmd, toPublicConfig(cfg), () => `AI 配置已更新: ${cfg.baseUrl} · ${cfg.model}${cfg.apiKey ? ' · API Key 已设置' : ''}`);
+      return;
+    }
+    const cfg = await readAiConfig();
+    out(cmd, { ...toPublicConfig(cfg), presets: AI_PRESETS }, () => {
+      const lines = [
+        `baseUrl: ${cfg.baseUrl}`,
+        `model:   ${cfg.model}`,
+        `apiKey:  ${toPublicConfig(cfg).apiKeyMask || '(未设置)'}`,
+        '',
+        '预设(--preset 一键套用,再 --api-key 填密钥):',
+        ...AI_PRESETS.map((p) => `  ${p.id.padEnd(10)} ${p.label.padEnd(18)} ${p.baseUrl}  模型: ${p.models.join(', ')}`),
+        '中转站: --base-url <中转站地址> --model <模型名> --api-key <key>',
+      ];
+      return lines.join('\n');
+    });
+  }),
+);
+
+leaf(aiCmd.command('test').description('测试 AI 连接(走与推荐相同的最小 chat 请求)')).action(
+  wrap(async (cmd) => {
+    const r = await testAiConnection();
+    out(cmd, r, () => `${r.ok ? '✓' : '✗'} ${r.message}`);
+    if (!r.ok) process.exitCode = 1;
+  }),
+);
+
+leaf(
+  aiCmd
+    .command('recommend')
+    .description('AI 按开发需求从技能库推荐技能;--bind 把推荐并入指定项目的技能集')
+    .argument('<requirement>', '开发需求(一两句话,如 "React + TS 的后台管理系统")')
+    .option('--bind <id|name>', '把推荐结果并入该项目技能集(缺省只看不绑)'),
+).action(
+  wrap(async (cmd, requirement: string, opts: { bind?: string }) => {
+    const r = await aiRecommendSkills({ requirement });
+    let bound: string[] = [];
+    if (opts.bind && r.items.length) {
+      const p = await findProject(opts.bind);
+      bound = [...new Set([...p.skills, ...r.items.map((s) => s.id)])];
+      await setProjectSkills(p.id, bound);
+    }
+    out(cmd, { ...r, bound }, () => {
+      const lines: string[] = [];
+      if (r.message) lines.push(`(${r.message})`);
+      for (const item of r.items) {
+        lines.push(`✓ ${item.id}  ${item.name}`);
+        if (item.reason) lines.push(`    推荐理由: ${item.reason}`);
+      }
+      if (bound.length) lines.push(`已并入项目技能集(现共 ${bound.length} 个);apply 生效: ssw project apply ${opts.bind}`);
+      else if (r.items.length && !opts.bind) lines.push('绑定到项目: ssw ai recommend "<需求>" --bind <id|name>');
+      return lines.join('\n');
+    });
+    // 推荐通道本身失败(降级 message 且无结果)时退出码非零,便于脚本判断
+    if (!r.items.length) process.exitCode = 1;
   }),
 );
 

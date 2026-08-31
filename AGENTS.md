@@ -4,7 +4,7 @@
 
 ## 项目概述
 
-**Skills SwitchTool**(`skills-switchtool`,v1.2.0):项目中心化的 Agent Skills 管理工具。交互模式仿照 cc-switch:**中央存储 + 切换 + 写入目标工具配置位置 + 快照可回滚**。
+**Skills SwitchTool**(`skills-switchtool`,v1.3.0):项目中心化的 Agent Skills 管理工具。交互模式仿照 cc-switch:**中央存储 + 切换 + 写入目标工具配置位置 + 快照可回滚**。
 
 核心概念:
 
@@ -14,6 +14,7 @@
 - **全局(用户级)共享应用**(`src/core/global.ts`):把选定 skills 物化到各 agent 的用户级 skills 目录(`~/.claude/skills` 等,即适配器的 `userSkillsDir()`),一次配置、该 agent 的所有项目共享。档案存 `global.json`,快照挂在固定名 `__global__` 下,复用 apply.ts 的物化/移除原语与 snapshot.rollback。**MCP 是项目级概念,全局共享只管 skills**。CLI(`ssw global`)、REST(`/api/global*`)、桌面 GUI(「全局共享」视图)、TUI(g 键)均已接入。
 - **配置库导出/导入**(`src/core/profile.ts`):`ssw-profile@1` 单文件 bundle(skills 注册表 + MCP + 项目档案 + 全局档案 + local 技能实体 base64),跨机器/跨平台整体搬家;导入幂等——github 按仓库去重重克隆、local 文件落库带路径穿越防护、项目 id 冲突换新 id、`activeProjectId` 与全局档案仅在本机空缺时采用。
 - **收养既有 skills**(library.ts `adoptFromAgent`):把 agent 用户级/项目级 skills 目录里已存在的 skills 收进中央库(跳过指向库内的 symlink 与同名条目),先纳管再统一分发。
+- **AI 技能推荐**(`src/core/ai.ts`):新建项目时填开发需求,模型(OpenAI 兼容 chat/completions)读本地技能库给出初步推荐供勾选绑定;配置存 `ai.json`(baseUrl/model/apiKey,预设 Kimi/DeepSeek/OpenAI/OpenRouter,baseUrl 可填中转站);未配置 key/库空/断网/解析失败一律降级为 `{ items: [], message }` 不抛异常;CLI(`ssw ai`)、REST(`/api/ai/*`)、桌面 GUI(新建项目弹窗 + 设置弹窗)、TUI(i 键)均已接入。
 - **快照回滚**:每次 apply 前在 `snapshots/<projectId>/` 建快照(全局共享用 `snapshots/__global__/`),每项目保留最近 5 份,`rollback` 逆序还原最近一次(skills 与 MCP 同一份快照,一起还原)。
 
 两个前端共享同一个 TypeScript 核心引擎(`src/core/`),也共享同一份磁盘状态(`SSW_HOME`):
@@ -47,7 +48,7 @@ CLI 本机使用:`npm run build` 后 `node dist/cli.js ...`(`package.json` 已�
 ```
 src/
   core/                  # 核心引擎,不依赖任何前端;GUI/CLI/Electron 零改动复用
-    paths.ts             # SSW_HOME 路径常量(含 globalFile);每次调用重读环境变量(测试隔离的关键);
+    paths.ts             # SSW_HOME 路径常量(含 globalFile、aiFile);每次调用重读环境变量(测试隔离的关键);
                          #   ensureSkeleton() 启动时建目录骨架
     types.ts             # SkillEntry / McpEntry / Project / ProjectsData / ApplyMode
     registry.ts          # registry.json 读写;atomicWriteJson(tmp+rename 原子写,renameWithRetry 退避重试
@@ -84,6 +85,13 @@ src/
     snapshot.ts          # 快照/回滚;MAX_SNAPSHOTS = 5;移动走 moveEntry:跨设备 EXDEV 降级 复制+删除(Windows 多盘符)
     recommend.ts         # 技术栈检测(package.json/go.mod/Cargo.toml/pyproject.toml)+ GitHub Search API;
                          #   24h 缓存(cache/);断网/限流降级返回 { items: [], message },绝不抛异常
+    ai.ts                # AI 技能推荐:OpenAI 兼容 chat/completions 读本地技能库,按用户需求挑技能;
+                         #   配置 ai.json(baseUrl/model/apiKey,字段级容错),AI_PRESETS 预设
+                         #   Kimi/DeepSeek/OpenAI/OpenRouter,baseUrl 可填中转站(chatEndpoint 端点归一);
+                         #   GET 只回掩码(toPublicConfig)不回 key 原文;超时 60s(SSW_AI_TIMEOUT_MS 覆盖);
+                         #   parseAiRecommendations 容忍围栏/裸数组/解释文字,幻觉 id 丢弃,上限 8 个;
+                         #   testAiConnection 走同款最小 chat 请求(测过即推荐可用);fetchImpl 可注入(测试);
+                         #   一切失败降级 { items: [], message } 不抛异常;AiError(配置校验)映射 400
     migrate.ts           # 迁移码:ssw1:owner/repo,... 仅含 github 来源,按仓库去重;
                          #   importSkillsCode 幂等跳过已有、单仓失败不中断;installFn 可注入(测试)
     profile.ts           # 配置库导出/导入:ssw-profile@1 bundle(skills+mcps+projects+global+local 技能实体 base64,
@@ -123,6 +131,8 @@ src/
                          #   /api/global GET/PUT + apply/unapply/rollback;/api/profile/export|import;
                          #   GET /api/progress:git clone/pull 任务进度(前端进度条轮询);
                          #   POST /api/skills/adopt 收养 agent 目录既有 skills;
+                         #   /api/ai/config GET(掩码)/PUT、/api/ai/test(保存前可带表单值先测)、
+                         #   /api/ai/recommend(requirement 必填,降级不抛错);
                          #   GET /api/doctor:环境自检报告(带 version,GUI 设置弹窗数据源)
   serve.ts               # startServer(port, host?) 启动函数:仅 Electron 主进程进程内调用(127.0.0.1+随机端口)
   cli.ts                 # ssw/skills 入口:全部子命令;id|name 寻址(id 精确优先,name 歧义列候选报错;
@@ -137,16 +147,20 @@ src/
                          #   catalog categories 分类清单(count/skills/mcps 统计,--category 的 id 来源);
                          #   skill init [--name --desc] [--content 文本|--file 路径](粘贴现成 SKILL.md 均可);
                          #   skill adopt --agent <id> [--user|--path];global show/bind/agents/apply/unapply/rollback;
+                         #   ai config [--preset/--base-url/--model/--api-key](不带选项=查看+预设清单)/ test /
+                         #   recommend "<需求>" [--bind 项目](并入技能集);project create --ai "<需求>" 创建即推荐并自动绑定;
                          #   profile export [--file](警告打 stderr)/ import <file>(导入 failed 非零时退出码 1)
-  tui.ts                 # 终端交互面板:项目列表(光标项目附技能/MCP 绑定摘要行)+ ↑↓/Enter/a/u/r/s/m/g/c/d/q
+  tui.ts                 # 终端交互面板:项目列表(光标项目附技能/MCP 绑定摘要行)+ ↑↓/Enter/a/u/r/i/s/m/g/c/d/q
                          #   按键(g 全局共享视图内 a/u/r 作用于全局;推荐库视图内 c 循环切换分类过滤;
+                         #   i AI 推荐:readline 临时退出 raw 模式读一行需求,结果视图内 a 全部并入光标项目;
                          #   d 环境自检视图(d 重跑);技能库/MCP/推荐库只读);stdin raw 模式 + ANSI 整帧重绘
   version.ts             # 版本号单一来源:运行时读 ../package.json(src/ 与 dist/ 都恰在根下一层);
                          #   esbuild 打包单文件时 define 注入 __SSW_VERSION__
 electron/main.mjs        # Electron 主进程:动态 import dist/serve.js,127.0.0.1+端口 0,BrowserWindow 加载
 public/                  # 原生单页应用(index.html / app.js / style.css),无构建步骤;深/浅双主题:
                          #   CSS 变量在 style.css 顶部,选择存 localStorage(ssw-theme),
-                         #   index.html head 内联脚本在首屏前恢复主题
+                         #   index.html head 内联脚本在首屏前恢复主题;
+                         #   新建项目弹窗含「开发需求」AI 推荐区(勾选绑定);设置弹窗含 AI 配置(预设/baseUrl/模型/Key + 测连)
 scripts/                 # make-icon.mjs(生成图标)、build-cli.mjs(esbuild 打 CLI 单文件,注入 createRequire + __SSW_VERSION__)
 tests/                   # vitest,每文件对应一个 core 模块 + platform(Windows 专项)+ server(API)+ cli(端到端)
 electron-builder.yml     # 打包配置:Linux AppImage + Windows NSIS(中文安装界面)+ macOS dmg/zip → release/,
@@ -166,15 +180,15 @@ electron-builder.yml     # 打包配置:Linux AppImage + Windows NSIS(中文安�
 - **路径不硬编码 `~/.skills-switch`**:一律用 `src/core/paths.ts` 的函数,保证 `SSW_HOME` 覆盖生效。
 - **降级而非崩溃**是既定策略:推荐引擎断网降级空结果;symlink 失败降级 copy 并告警;JSON 损坏容错为空。
 - CLI 约定:错误信息打 **stderr** 且退出码非零,成功输出打 stdout;缺必填参数时报错并打印该命令用法。
-- API 约定:REST + JSON,错误统一 `{ "error": "..." }`;`LibraryError`/`McpError` 映射 400,其余 500。
+- API 约定:REST + JSON,错误统一 `{ "error": "..." }`;`LibraryError`/`McpError`/`AiError` 映射 400,其余 500。
 
 ## 测试
 
 - 框架:**vitest**(`vitest run`),配置在 `vitest.config.ts`:`environment: 'node'`、`pool: 'forks'`、`testTimeout: 20000`。
 - 测试文件在 `tests/*.test.ts`,每个 core 模块一个对应文件,外加:`platform.test.ts`(Windows 专项:symlink EPERM 降级 copy、git 不在 PATH 的可读报错、Windows 保留名拒绝)、`server.test.ts`(起真实 HTTP 服务验证校验逻辑与 CLI 对齐)、`cli.test.ts`(端到端,用 `child_process` 跑**编译产物** `dist/cli.js`,`beforeAll` 里先自动跑 `npm run build`;Windows 上改用 `npm.cmd` 且必须带 `shell: true`——Node ≥18.20/20.12 起无 shell 直接 spawn `.cmd` 会抛 EINVAL,只换名字绕不过)。
 - **隔离约定(必须遵守)**:测试在 `beforeEach` 里把 `process.env.SSW_HOME` 指向 `fs.mkdtemp` 临时目录,`afterEach` 里删除该环境变量并 `rm` 临时目录——绝不触碰真实 `~/.skills-switch`。涉及真实文件系统的测试保持串行(这也是 `pool: 'forks'` 的原因)。`global.test.ts` 额外用 `vi.spyOn(os, 'homedir')` 指到临时目录,绝不触碰真实 home。
-- 网络相关测试注入假 `fetch`(`recommendForProject(path, name, fetchImpl)` 的第三参),不打真实 GitHub API。
-- 提交改动前跑 `npm test`,当前基线:**16 个文件 157 个用例全绿**。push/PR 由 `.github/workflows/ci.yml` 跑三平台 × Node 18/20/22。
+- 网络相关测试注入假 `fetch`(`recommendForProject(path, name, fetchImpl)` 的第三参、`aiRecommendSkills({ ..., fetchImpl })` 与 `testAiConnection(overrides, fetchImpl)`),不打真实 GitHub/模型 API。
+- 提交改动前跑 `npm test`,当前基线:**17 个文件 176 个用例全绿**。push/PR 由 `.github/workflows/ci.yml` 跑三平台 × Node 18/20/22。
 
 ## 安全注意事项
 
@@ -185,5 +199,6 @@ electron-builder.yml     # 打包配置:Linux AppImage + Windows NSIS(中文安�
 - 桌面版 BrowserWindow 开 `contextIsolation: true`、`nodeIntegration: false`,服务仅监听 `127.0.0.1`。
 - Express 服务**无认证**:仅由桌面 App 进程内启动(`startServer(port, '127.0.0.1')`),不暴露网卡;若未来重新开放独立 Web 模式,需自行限制监听范围或套带认证的反向代理。
 - 不要把 `SSW_HOME` 指向的目录当作可信输入边界——它存放的就是本工具的全部状态,损坏时要容错而不是崩溃。
+- AI 配置的 apiKey **明文存于** `ai.json`(与各家 CLI 的凭据文件同级风险):服务仅监听 127.0.0.1,REST/日志/导出(profile bundle 不含 ai.json)都不得回传 key 原文,GET /api/ai/config 只回掩码。
 
 每次修改界面或增加功能，要同步增加所有release版本功能,并在确认正确后直接提交，核心产品是appimage和cli，不需要做web

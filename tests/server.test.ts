@@ -208,4 +208,35 @@ describe('server 校验(与 CLI 行为对齐)', () => {
     const filtered = await api('GET', `/api/catalog?category=${devId}`);
     expect(filtered.data.items.every((e: { category: string }) => e.category === devId)).toBe(true);
   });
+
+  it('AI 端点:配置读写掩码不回原文;非法 baseUrl 400;recommend 校验与降级', async () => {
+    // 初始:未配置 key,带预设清单,不含 apiKey 原文字段
+    const init = await api('GET', '/api/ai/config');
+    expect(init.status).toBe(200);
+    expect(init.data.hasKey).toBe(false);
+    expect(Array.isArray(init.data.presets)).toBe(true);
+    expect('apiKey' in init.data).toBe(false);
+
+    // 保存配置:返回掩码;再 GET 读回
+    const put = await api('PUT', '/api/ai/config', { baseUrl: 'https://relay.example.com/v1', model: 'm1', apiKey: 'sk-live-4321' });
+    expect(put.status).toBe(200);
+    expect(put.data.apiKeyMask).toBe('••••4321');
+    const got = await api('GET', '/api/ai/config');
+    expect(got.data.model).toBe('m1');
+    expect(JSON.stringify(got.data)).not.toContain('sk-live-4321');
+
+    // 非法 baseUrl → 400;字段类型错 → 400
+    expect((await api('PUT', '/api/ai/config', { baseUrl: 'not-a-url' })).status).toBe(400);
+    expect((await api('PUT', '/api/ai/config', { model: 1 })).status).toBe(400);
+
+    // recommend:requirement 必填;库里没 skill 时降级 message 而不是报错
+    expect((await api('POST', '/api/ai/recommend', {})).status).toBe(400);
+    const rec = await api('POST', '/api/ai/recommend', { requirement: '做个后台系统' });
+    expect(rec.status).toBe(200);
+    expect(rec.data.items).toEqual([]);
+    expect(rec.data.message).toContain('技能库为空');
+
+    // test 端点不配置代理 fetch 会真实发请求——只断言它对缺 key 的短路
+    // (真实网络路径由 tests/ai.test.ts 的注入 fetch 覆盖)
+  });
 });

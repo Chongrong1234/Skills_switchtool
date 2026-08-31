@@ -345,6 +345,29 @@ function openSettingsModal() {
         <label><input type="radio" name="st-theme" value="light" ${cur === 'light' ? 'checked' : ''} /> 浅色</label>
       </div>
     </div>
+    <div class="form-row"><label>AI 推荐(模型读本地技能库,新建项目时按需求推荐技能)</label>
+      <div class="ai-form">
+        <div class="ai-row"><span class="ai-label">预设</span>
+          <select id="st-ai-preset"></select>
+        </div>
+        <div class="ai-row"><span class="ai-label">baseUrl</span>
+          <input type="text" id="st-ai-baseurl" placeholder="https://api.moonshot.cn/v1 或中转站地址" />
+        </div>
+        <div class="ai-row"><span class="ai-label">模型</span>
+          <input type="text" id="st-ai-model" list="st-ai-models" placeholder="kimi-k2-0905-preview" />
+          <datalist id="st-ai-models"></datalist>
+        </div>
+        <div class="ai-row"><span class="ai-label">API Key</span>
+          <input type="password" id="st-ai-key" placeholder="加载中…" autocomplete="off" />
+        </div>
+        <div class="ai-row">
+          <button class="btn btn-sm btn-primary" id="st-ai-save">保存</button>
+          <button class="btn btn-sm" id="st-ai-test">测试连接</button>
+          <span class="rdesc" id="st-ai-status"></span>
+        </div>
+        <div class="rdesc">兼容 OpenAI chat 接口的官方端点或中转站均可;Key 只存在本机数据目录,服务不对外网开放</div>
+      </div>
+    </div>
     <div class="form-row"><label>环境自检(数据目录 / git / agent 检测 / 数据文件)</label>
       <div id="st-doctor"><div class="loading-text">自检中…</div></div>
     </div>
@@ -356,6 +379,59 @@ function openSettingsModal() {
   modal.querySelector('#m-close').addEventListener('click', closeModal);
   modal.querySelectorAll('input[name="st-theme"]').forEach((r) =>
     r.addEventListener('change', () => setTheme(r.value)));
+
+  // ---- AI 配置:预设只负责预填 baseUrl/model,保存/测试都按表单当前值走 ----
+  const aiEls = {
+    preset: modal.querySelector('#st-ai-preset'),
+    baseUrl: modal.querySelector('#st-ai-baseurl'),
+    model: modal.querySelector('#st-ai-model'),
+    models: modal.querySelector('#st-ai-models'),
+    key: modal.querySelector('#st-ai-key'),
+    status: modal.querySelector('#st-ai-status'),
+  };
+  let aiPresets = [];
+  const aiFormBody = () => ({
+    baseUrl: aiEls.baseUrl.value.trim(),
+    model: aiEls.model.value.trim(),
+    // key 留空 = 保持不变(保存语义);测试时同理回落到已存 key
+    ...(aiEls.key.value.trim() ? { apiKey: aiEls.key.value.trim() } : {}),
+  });
+  api('GET', '/api/ai/config').then((cfg) => {
+    aiPresets = cfg.presets || [];
+    aiEls.preset.innerHTML =
+      aiPresets.map((p) => `<option value="${esc(p.id)}">${esc(p.label)}</option>`).join('') +
+      '<option value="">自定义(中转站)</option>';
+    aiEls.baseUrl.value = cfg.baseUrl;
+    aiEls.model.value = cfg.model;
+    // 命中预设则回显选中,否则落"自定义"
+    const hit = aiPresets.find((p) => p.baseUrl === cfg.baseUrl);
+    aiEls.preset.value = hit ? hit.id : '';
+    aiEls.models.innerHTML = (hit ? hit.models : []).map((m) => `<option value="${esc(m)}"></option>`).join('');
+    aiEls.key.placeholder = cfg.hasKey ? `已保存(${esc(cfg.apiKeyMask)}),留空保持不变` : '填 API Key';
+    aiEls.status.textContent = cfg.hasKey ? '' : '尚未配置 API Key,AI 推荐不可用';
+  }).catch(() => { aiEls.status.textContent = 'AI 配置加载失败'; });
+  aiEls.preset.addEventListener('change', () => {
+    const p = aiPresets.find((x) => x.id === aiEls.preset.value);
+    if (!p) return; // 自定义:不动用户已填内容
+    aiEls.baseUrl.value = p.baseUrl;
+    aiEls.model.value = p.models[0] || '';
+    aiEls.models.innerHTML = p.models.map((m) => `<option value="${esc(m)}"></option>`).join('');
+  });
+  modal.querySelector('#st-ai-save').addEventListener('click', () => run(async () => {
+    const body = aiFormBody();
+    if (!body.baseUrl || !body.model) { aiEls.status.textContent = 'baseUrl 与模型必填'; return; }
+    const cfg = await api('PUT', '/api/ai/config', body);
+    aiEls.key.value = '';
+    aiEls.key.placeholder = cfg.hasKey ? `已保存(${esc(cfg.apiKeyMask)}),留空保持不变` : '填 API Key';
+    aiEls.status.textContent = '已保存';
+    toast('AI 配置已保存');
+  }));
+  modal.querySelector('#st-ai-test').addEventListener('click', () => run(async () => {
+    aiEls.status.textContent = '测试连接中…';
+    const r = await api('POST', '/api/ai/test', aiFormBody());
+    aiEls.status.textContent = `${r.ok ? '✓' : '✗'} ${r.message}`;
+  }));
+
   // 环境自检:与 ssw doctor / TUI d 键同一份报告(GET /api/doctor)
   const box = modal.querySelector('#st-doctor');
   const runDoctorCheck = () => {
@@ -434,6 +510,50 @@ function openAddMcpModal(project) {
 }
 
 // ---------- 新建项目(含推荐流程) ----------
+/** 新建项目后的 AI 推荐区:模型读本地技能库,按需求挑技能,勾选后并入项目技能集 */
+async function loadAiRecommend(modal, project, requirement) {
+  const box = modal.querySelector('#np-ai');
+  box.innerHTML = '<div class="spinner"></div><div class="loading-text">AI 正在阅读本地技能库并匹配需求…</div>';
+  let rec;
+  try {
+    rec = await api('POST', '/api/ai/recommend', { requirement, projectName: project.name });
+  } catch (err) {
+    box.innerHTML = `<div class="empty">AI 推荐失败: ${esc(err.message)}</div>`;
+    return;
+  }
+  if (!rec.items.length) {
+    box.innerHTML = `<div class="empty">${esc(rec.message || 'AI 暂无推荐')}</div>`;
+    return;
+  }
+  box.innerHTML = `
+    <h3 style="margin:14px 0 8px">AI 从本地技能库推荐(${esc(rec.model || '')})</h3>
+    <div class="rec-list">
+      ${rec.items.map((r) => `
+        <div class="rec-item">
+          <div class="rhead">
+            <label class="ai-pick"><input type="checkbox" data-ai-id="${esc(r.id)}" checked /> <span class="rname">${esc(r.name)}</span></label>
+          </div>
+          <div class="rdesc">${esc(r.description)}</div>
+          ${r.reason ? `<div class="rreason">${esc(r.reason)}</div>` : ''}
+        </div>`).join('')}
+    </div>
+    <div class="rbtns" style="margin-top:8px">
+      <button class="btn btn-sm btn-primary" id="np-ai-bind">绑定选中技能到项目</button>
+    </div>`;
+  box.querySelector('#np-ai-bind').addEventListener('click', () => run(async () => {
+    const picked = [...box.querySelectorAll('input[data-ai-id]:checked')].map((x) => x.dataset.aiId);
+    if (!picked.length) return toast('未勾选任何技能', 'err');
+    const latest = await api('GET', `/api/projects/${project.id}`);
+    await api('POST', `/api/projects/${project.id}/skills`, {
+      skillIds: [...new Set([...latest.skills, ...picked])],
+    });
+    await loadAll();
+    box.querySelector('#np-ai-bind').disabled = true;
+    box.querySelector('#np-ai-bind').textContent = `已绑定 ${picked.length} 个 ✓`;
+    toast(`已绑定 ${picked.length} 个技能,点「应用配置」生效`);
+  }));
+}
+
 function openNewProjectModal() {
   const modal = openModal(`
     <h2>新建项目</h2>
@@ -449,6 +569,9 @@ function openNewProjectModal() {
       <div class="agent-checks">${agentCheckboxList(state.agents.filter((a) => a.detected && a.id !== 'agents').map((a) => a.id))}</div>
       <div class="rdesc">已默认勾选本机检测到的 agent;通用互操作目录 agents 可按需手动勾选</div>
     </div>
+    <div class="form-row"><label>开发需求(可选;AI 将读本地技能库,按需求推荐匹配技能——需先在「设置」里配置模型与 API Key)</label>
+      <textarea id="np-ai-req" rows="2" placeholder="例如:React + TypeScript 的后台管理系统,需要代码审查与测试"></textarea></div>
+    <div id="np-ai"></div>
     <div id="np-recommend"></div>
     <div class="modal-actions">
       <button class="btn" id="np-cancel">取消</button>
@@ -469,6 +592,7 @@ function openNewProjectModal() {
   modal.querySelector('#np-submit').addEventListener('click', () => run(async () => {
     const name = modal.querySelector('#np-name').value.trim();
     const projPath = modal.querySelector('#np-path').value.trim();
+    const requirement = modal.querySelector('#np-ai-req').value.trim();
     const applyMode = modal.querySelector('input[name="np-mode"]:checked').value;
     const agents = [...modal.querySelectorAll('input[name="m-agent"]:checked')].map((x) => x.value);
     if (!name) return toast('名称必填', 'err');
@@ -488,51 +612,53 @@ function openNewProjectModal() {
     box.innerHTML = '<div class="spinner"></div><div class="loading-text">正在检测技术栈并搜索 GitHub 推荐…</div>';
     modal.querySelector('#np-submit').disabled = true;
 
-    let rec;
+    // GitHub 在线推荐(失败/无结果都不阻塞后面的 AI 推荐)
     try {
-      rec = await api('GET', `/api/recommend?projectId=${encodeURIComponent(project.id)}`);
+      const rec = await api('GET', `/api/recommend?projectId=${encodeURIComponent(project.id)}`);
+      if (!rec.items.length) {
+        box.innerHTML = `<div class="empty">${esc(rec.message || '暂无推荐')}</div>`;
+      } else {
+        box.innerHTML = `
+          <h3 style="margin:14px 0 8px">为你推荐(按 star 排序)</h3>
+          <div class="rec-list">
+            ${rec.items.map((r) => `
+              <div class="rec-item">
+                <div class="rhead">
+                  <span class="rname">${esc(r.name)}</span>
+                  <span class="rstars">★ ${r.stars}</span>
+                </div>
+                <div class="rdesc">${esc(r.description)}</div>
+                <div class="rreason">${esc(r.reason)} · ${esc(r.repo)}</div>
+                <div class="rbtns"><button class="btn btn-sm btn-primary" data-rec-url="${esc(r.url)}">加入库并绑定</button></div>
+              </div>`).join('')}
+          </div>`;
+        box.querySelectorAll('[data-rec-url]').forEach((btn) =>
+          btn.addEventListener('click', () => run(async () => {
+            btn.disabled = true;
+            btn.textContent = '安装中…';
+            try {
+              const installed = await apiWithProgress('POST', '/api/skills', { source: 'github', uri: btn.dataset.recUrl });
+              const latest = (await api('GET', `/api/projects/${project.id}`));
+              await api('POST', `/api/projects/${project.id}/skills`, {
+                skillIds: [...latest.skills, ...installed.map((s) => s.id)],
+              });
+              await loadAll();
+              btn.textContent = '已加入 ✓';
+              toast(`已安装 ${installed.length} 个 skill 并绑定到项目`);
+            } catch (err) {
+              // 失败必须恢复按钮,否则会永远停在"安装中…";错误继续抛给 run() 弹 toast
+              btn.disabled = false;
+              btn.textContent = '加入库并绑定';
+              throw err;
+            }
+          })));
+      }
     } catch (err) {
       box.innerHTML = `<div class="empty">推荐加载失败: ${esc(err.message)}</div>`;
-      return;
     }
-    if (!rec.items.length) {
-      box.innerHTML = `<div class="empty">${esc(rec.message || '暂无推荐')}</div>`;
-      return;
-    }
-    box.innerHTML = `
-      <h3 style="margin:14px 0 8px">为你推荐(按 star 排序)</h3>
-      <div class="rec-list">
-        ${rec.items.map((r) => `
-          <div class="rec-item">
-            <div class="rhead">
-              <span class="rname">${esc(r.name)}</span>
-              <span class="rstars">★ ${r.stars}</span>
-            </div>
-            <div class="rdesc">${esc(r.description)}</div>
-            <div class="rreason">${esc(r.reason)} · ${esc(r.repo)}</div>
-            <div class="rbtns"><button class="btn btn-sm btn-primary" data-rec-url="${esc(r.url)}">加入库并绑定</button></div>
-          </div>`).join('')}
-      </div>`;
-    box.querySelectorAll('[data-rec-url]').forEach((btn) =>
-      btn.addEventListener('click', () => run(async () => {
-        btn.disabled = true;
-        btn.textContent = '安装中…';
-        try {
-          const installed = await apiWithProgress('POST', '/api/skills', { source: 'github', uri: btn.dataset.recUrl });
-          const latest = (await api('GET', `/api/projects/${project.id}`));
-          await api('POST', `/api/projects/${project.id}/skills`, {
-            skillIds: [...latest.skills, ...installed.map((s) => s.id)],
-          });
-          await loadAll();
-          btn.textContent = '已加入 ✓';
-          toast(`已安装 ${installed.length} 个 skill 并绑定到项目`);
-        } catch (err) {
-          // 失败必须恢复按钮,否则会永远停在"安装中…";错误继续抛给 run() 弹 toast
-          btn.disabled = false;
-          btn.textContent = '加入库并绑定';
-          throw err;
-        }
-      })));
+
+    // AI 推荐本地技能库:填了开发需求才触发(独立 try 之外,不受 GitHub 推荐成败影响)
+    if (requirement) await loadAiRecommend(modal, project, requirement);
   }));
 }
 

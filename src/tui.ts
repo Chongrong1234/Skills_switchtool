@@ -2,11 +2,13 @@
  * tui.ts —— 终端交互面板(TUI):不带子命令启动 ssw/skills 时进入。
  * 零依赖实现:stdin raw 模式解析按键,ANSI 转义序列渲染,不引入 blessed/Ink。
  * 主视图 = 项目列表(仿 cc-switch 的切换面板):↑↓ 移动光标,Enter 切换并 apply;
- * a apply / u unapply / r 回滚 / s 技能库 / m MCP 库 / g 全局共享 / c 推荐库 / d 环境自检 / q 或 Ctrl-C 退出,Esc 返回项目视图。
+ * a apply / u unapply / r 回滚 / i AI 推荐 / s 技能库 / m MCP 库 / g 全局共享 / c 推荐库 / d 环境自检 / q 或 Ctrl-C 退出,Esc 返回项目视图。
  * 全局共享视图里 a/u/r 作用于全局(用户级)物化;推荐库视图内 c 循环切换分类过滤;
- * 技能库/MCP 库/推荐库为只读视图(增删改走 CLI 子命令)。
+ * AI 推荐视图(i 键输入开发需求后进入)内 a 把推荐全部并入光标项目;技能库/MCP 库/推荐库为只读视图(增删改走 CLI 子命令)。
  */
+import readline from 'node:readline';
 import { adapters } from './adapters/index.js';
+import { aiRecommendSkills, type AiRecommendedSkill } from './core/ai.js';
 import { applyProject, unapplyProject } from './core/apply.js';
 import { CATALOG_CATEGORIES, listCatalogWithInstalled, type CatalogEntryWithInstalled } from './core/catalog.js';
 import {
@@ -18,12 +20,12 @@ import {
 } from './core/global.js';
 import { listSkills } from './core/library.js';
 import { listMcps } from './core/mcps.js';
-import { listProjects, setActiveProject } from './core/projects.js';
+import { listProjects, setActiveProject, setProjectSkills } from './core/projects.js';
 import { rollback } from './core/snapshot.js';
 import { runDoctor, type DoctorReport } from './core/doctor.js';
 import type { McpEntry, Project, SkillEntry } from './core/types.js';
 
-type View = 'projects' | 'skills' | 'mcps' | 'global' | 'catalog' | 'doctor';
+type View = 'projects' | 'skills' | 'mcps' | 'global' | 'catalog' | 'doctor' | 'ai';
 
 interface State {
   view: View;
@@ -42,6 +44,8 @@ interface State {
   catalogCategory: string;
   /** 环境自检结果(null = 尚未运行;d 键触发) */
   doctor: DoctorReport | null;
+  /** AI 推荐结果(i 键触发;绑定作用的目标项目随结果一起存) */
+  aiRec: { projectId: string; items: AiRecommendedSkill[]; message?: string } | null;
 }
 
 const INV = '\x1b[7m'; // 反色(光标行)
@@ -68,6 +72,7 @@ export async function startTui(): Promise<void> {
     catalog: [],
     catalogCategory: '',
     doctor: null,
+    aiRec: null,
   };
 
   async function reload(): Promise<void> {
@@ -111,7 +116,7 @@ export async function startTui(): Promise<void> {
         lines.push(`${DIM}${cut(summary, cols - 2)}${RESET}`);
       }
       lines.push('');
-      lines.push(`${DIM}↑↓ 移动  Enter 切换并 apply  a apply  u unapply  r 回滚  s 技能库  m MCP库  g 全局共享  c 推荐库  d 自检  q 退出${RESET}`);
+      lines.push(`${DIM}↑↓ 移动  Enter 切换并 apply  a apply  u unapply  r 回滚  i AI推荐  s 技能库  m MCP库  g 全局共享  c 推荐库  d 自检  q 退出${RESET}`);
     } else if (state.view === 'skills') {
       lines.push(`技能库(${state.skills.length}):`);
       lines.push('');
@@ -187,6 +192,23 @@ export async function startTui(): Promise<void> {
       }
       lines.push('');
       lines.push(`${DIM}d 重新自检  Esc 返回项目视图  q 退出${RESET}`);
+    } else if (state.view === 'ai') {
+      lines.push('AI 技能推荐(模型读本地技能库):');
+      lines.push('');
+      const rec = state.aiRec;
+      if (!rec || !rec.items.length) {
+        lines.push(`(${rec?.message ?? '暂无结果——在项目视图按 i 输入开发需求'})`);
+      } else {
+        const proj = state.projects.find((p) => p.id === rec.projectId);
+        lines.push(`目标项目: ${proj?.name ?? rec.projectId}`);
+        lines.push('');
+        for (const it of rec.items.slice(0, rows - 10)) {
+          lines.push(`  ${cut(it.name, 20).padEnd(20)} ${cut(it.id, 34)}`);
+          if (it.reason) lines.push(`      ${DIM}${cut(it.reason, cols - 8)}${RESET}`);
+        }
+      }
+      lines.push('');
+      lines.push(`${DIM}a 全部绑定到项目  Esc 返回项目视图  q 退出${RESET}`);
     }
 
     if (state.message) {
@@ -283,6 +305,19 @@ export async function startTui(): Promise<void> {
         }
         return;
       }
+      if (state.view === 'ai') {
+        // AI 推荐视图:a 把推荐结果整体并入目标项目技能集(与已有绑定并集去重)
+        if (key === 'a' && state.aiRec?.items.length) {
+          const rec = state.aiRec;
+          void run(async () => {
+            const p = state.projects.find((x) => x.id === rec.projectId);
+            if (!p) throw new Error('项目已不存在');
+            await setProjectSkills(p.id, [...new Set([...p.skills, ...rec.items.map((i) => i.id)])]);
+            return `✓ 已把 ${rec.items.length} 个 AI 推荐技能并入「${p.name}」(a apply 生效)`;
+          });
+        }
+        return;
+      }
       if (state.view !== 'projects') return; // 技能库/MCP 库为只读视图,只响应 Esc/q
       switch (key) {
         case '\u001b[A': // ↑
@@ -321,6 +356,27 @@ export async function startTui(): Promise<void> {
             return state.doctor.ok ? '✓ 自检通过' : '✗ 自检发现 error 级问题,见上方列表';
           });
           break;
+        case 'i': { // AI 推荐:读一行开发需求 → 模型从技能库挑技能 → 进 AI 视图(a 绑定)
+          const p = currentProject();
+          if (!p) return;
+          void (async () => {
+            const requirement = (await ask('开发需求(一两句话)> ')).trim();
+            if (!requirement) {
+              render();
+              return;
+            }
+            await run(async () => {
+              const r = await aiRecommendSkills({ requirement, projectName: p.name });
+              state.aiRec = { projectId: p.id, items: r.items, message: r.message };
+              if (r.items.length) {
+                state.view = 'ai';
+                return `AI(${r.model ?? '模型'})推荐了 ${r.items.length} 个技能:按 a 全部并入「${p.name}」`;
+              }
+              return `AI 推荐: ${r.message ?? '无结果'}`;
+            });
+          })();
+          break;
+        }
         case '\r': { // Enter:切换激活项目并 apply
           const p = currentProject();
           if (!p) return;
@@ -371,6 +427,27 @@ export async function startTui(): Promise<void> {
       process.stdout.write('\x1b[2J\x1b[H');
       resolve();
     };
+
+    /** 临时退出 raw 模式读一行输入(AI 推荐的开发需求);结束后恢复按键监听与整帧渲染 */
+    const ask = (question: string): Promise<string> =>
+      new Promise((resolveAsk) => {
+        stdin.removeListener('data', onData);
+        stdin.setRawMode(false);
+        const rl = readline.createInterface({ input: stdin, output: process.stdout });
+        // Ctrl-C 只会触发 close 而不会回调 question,用 done 兜底恢复监听,避免面板死键
+        let done = false;
+        const finish = (ans: string): void => {
+          if (done) return;
+          done = true;
+          rl.close();
+          stdin.setRawMode(true);
+          stdin.resume();
+          stdin.on('data', onData);
+          resolveAsk(ans);
+        };
+        rl.question(`\n${question}`, finish);
+        rl.on('close', () => finish(''));
+      });
 
     stdin.setRawMode(true);
     stdin.resume();

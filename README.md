@@ -61,6 +61,7 @@ ssw project switch api-server    # 激活项目 → 该项目的技能组合自�
 | 📦 **配置库整体搬家** | `ssw profile export/import` 把技能库 + MCP + 项目档案 + 全局共享打成单文件,跨机器、跨平台共享同一份配置;导入幂等 |
 | 🤝 **收养既有 skills** | `ssw skill adopt` 把各 agent 目录里已存在的 skills 一键收进中央库,先纳管再统一分发 |
 | 🔍 **智能推荐 + 内置推荐库** | 识别项目技术栈推荐 GitHub 高 star skills;另内置 99 个精选 skill 仓库 + 25 个常用 MCP server / 13 大类(分类带条目统计),离线可浏览,一键安装;断网安静降级 |
+| 🤖 **AI 技能推荐** | 新建项目时填一句开发需求,AI 读本地技能库给出初步推荐供勾选绑定;模型/baseUrl/API Key 在设置里配,官方端点或 OpenAI 兼容中转站均可(预设 Kimi/DeepSeek/OpenAI/OpenRouter);未配置或断网安静降级 |
 | 🖥️ **两种打开方式** | Electron 桌面 App 点点点、纯 CLI/终端面板——同一份核心,同一份状态 |
 | 🪶 **极致轻量** | 运行时仅 2 个依赖(express + commander);CLI 可打成零依赖单文件,拷到服务器即用 |
 
@@ -108,7 +109,7 @@ chmod +x "release/Skills SwitchTool-"*.AppImage
 
 ```bash
 skills    # 或 ssw —— ↑↓ 选项目,Enter 切换并 apply,
-          # a apply / u unapply / r 回滚 / s 技能库 / m MCP 库
+          # a apply / u unapply / r 回滚 / i AI 推荐(输入需求,结果视图内 a 并入项目) / s 技能库 / m MCP 库
           # g 全局共享(视图内 a/u/r 作用于全局) / c 推荐库(视图内 c 切换分类) / d 环境自检 / q 退出
 ```
 
@@ -120,6 +121,11 @@ ssw agents                              # 各 agent 适配器及 detected 状态
 ssw project list                        # 项目列表,* 为当前激活项
 ssw project create --name X [--agents claude-code,kimi-code] [--path /abs/path] [--mode symlink|copy]
                                         # --agents 缺省取本机检测到的 agent;--path 缺省取当前目录
+                                        # [--ai "开发需求"]:AI 读技能库推荐并自动绑定(需先 ssw ai config 配 key)
+ssw ai config [--preset kimi|deepseek|openai|openrouter] [--base-url X] [--model Y] [--api-key Z]
+                                        # 查看/设置 AI 配置(不带选项 = 查看;baseUrl 可填中转站)
+ssw ai test                             # 测试 AI 连接(最小 chat 请求)
+ssw ai recommend "<开发需求>" [--bind <id|name>]   # AI 从技能库推荐;--bind 并入项目技能集
 ssw project switch <id|name>            # 设为当前项目并 apply
 ssw project apply / unapply / rollback [id|name]
 ssw project bind <id|name> <skillId|name...> # 设置项目技能集(整体替换;skill 可用名称简写)
