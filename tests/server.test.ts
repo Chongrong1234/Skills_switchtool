@@ -122,6 +122,14 @@ describe('server 校验(与 CLI 行为对齐)', () => {
     expect(add.data.transport).toBe('stdio');
     expect((await api('GET', '/api/mcps')).data).toHaveLength(1);
 
+    // 同名再 POST = 更新配置(GUI「设置」按钮走的就是这条 upsert 路径),addedAt 保留首次添加时间
+    const upd = await api('POST', '/api/mcps', { name: 'fs', command: 'bunx', env: { K: 'V' } });
+    expect(upd.status).toBe(201);
+    expect(upd.data.command).toBe('bunx');
+    expect(upd.data.args).toBeUndefined();
+    expect(upd.data.addedAt).toBe(add.data.addedAt);
+    expect((await api('GET', '/api/mcps')).data).toHaveLength(1);
+
     const c = await api('POST', '/api/projects', { name: 'x', path: '/tmp/x', agents: ['claude-code'] });
     // 绑定不存在的 server → 400
     const badBind = await api('POST', `/api/projects/${c.data.id}/mcps`, { mcpNames: ['ghost'] });

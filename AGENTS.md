@@ -160,7 +160,8 @@ electron/main.mjs        # Electron 主进程:动态 import dist/serve.js,127.0.
 public/                  # 原生单页应用(index.html / app.js / style.css),无构建步骤;深/浅双主题:
                          #   CSS 变量在 style.css 顶部,选择存 localStorage(ssw-theme),
                          #   index.html head 内联脚本在首屏前恢复主题;
-                         #   新建项目弹窗含「开发需求」AI 推荐区(勾选绑定);设置弹窗含 AI 配置(预设/baseUrl/模型/Key + 测连)
+                         #   新建项目弹窗含「开发需求」AI 推荐区(勾选绑定);设置弹窗含 AI 配置(预设/baseUrl/模型/Key + 测连);
+                         #   MCP 服务页每个 server 带「设置」按钮,弹窗编辑配置(名称锁定,POST /api/mcps 同名 upsert 保存)
 scripts/                 # make-icon.mjs(生成图标)、build-cli.mjs(esbuild 打 CLI 单文件,注入 createRequire + __SSW_VERSION__)
 tests/                   # vitest,每文件对应一个 core 模块 + platform(Windows 专项)+ server(API)+ cli(端到端)
 electron-builder.yml     # 打包配置:Linux AppImage + Windows NSIS(中文安装界面)+ macOS dmg/zip → release/,

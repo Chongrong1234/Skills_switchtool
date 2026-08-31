@@ -894,11 +894,19 @@ function renderMcpLibrary() {
           <div class="sdesc">${esc(m.transport === 'stdio' ? `${m.command} ${(m.args || []).join(' ')}` : m.url)}</div>
           ${m.description ? `<div class="sdesc">${esc(m.description)}</div>` : ''}
           <div class="smeta"><span class="tag">${esc(m.transport)}</span></div>
-          <div><button class="btn btn-sm btn-danger" data-del-mcp="${esc(m.name)}">删除</button></div>
+          <div>
+            <button class="btn btn-sm" data-edit-mcp="${esc(m.name)}">设置</button>
+            <button class="btn btn-sm btn-danger" data-del-mcp="${esc(m.name)}">删除</button>
+          </div>
         </div>`).join('') || '<div class="empty">库还是空的,点上面按钮添加</div>'}
     </div>
   `;
-  document.getElementById('mc-add').addEventListener('click', openAddMcpServerModal);
+  document.getElementById('mc-add').addEventListener('click', () => openMcpServerModal());
+  main.querySelectorAll('[data-edit-mcp]').forEach((btn) =>
+    btn.addEventListener('click', () => {
+      const entry = state.mcps.find((m) => m.name === btn.dataset.editMcp);
+      if (entry) openMcpServerModal(entry);
+    }));
   main.querySelectorAll('[data-del-mcp]').forEach((btn) =>
     btn.addEventListener('click', () => run(async () => {
       if (!confirm(`确定从库中删除「${btn.dataset.delMcp}」?(各项目的绑定会一并解除)`)) return;
@@ -909,38 +917,45 @@ function renderMcpLibrary() {
     })));
 }
 
-/** 添加 MCP server:stdio(本地命令)与 http/sse(远端)字段按类型切换 */
-function openAddMcpServerModal() {
+/** 添加/配置 MCP server:stdio(本地命令)与 http/sse(远端)字段按类型切换;
+ *  传 existing 进入配置模式(名称是唯一键,锁定不可改),保存走 POST /api/mcps 同名 upsert */
+function openMcpServerModal(existing) {
+  const edit = !!existing;
+  const m = existing || {};
+  // KEY=V 逗号分隔 <-> 对象,与提交时的解析互逆(值里含 = 也能往返,提交按首个 = 切)
+  const kvJoin = (obj) => Object.entries(obj || {}).map(([k, v]) => `${k}=${v}`).join(',');
+  const isStdio = (m.transport || 'stdio') === 'stdio';
   const modal = openModal(`
-    <h2>添加 MCP server</h2>
+    <h2>${edit ? `配置 MCP server: ${esc(m.name)}` : '添加 MCP server'}</h2>
     <div class="form-row"><label>名称(字母/数字/下划线/连字符)</label>
-      <input type="text" id="mcp-name" placeholder="filesystem" /></div>
+      <input type="text" id="mcp-name" placeholder="filesystem" value="${esc(m.name || '')}" ${edit ? 'disabled' : ''} />
+      ${edit ? '<div class="rdesc">名称是唯一键,不可修改;改动在下次 apply 时写入各 agent 配置</div>' : ''}</div>
     <div class="form-row"><label>描述(可选)</label>
-      <input type="text" id="mcp-desc" placeholder="这个服务做什么" /></div>
+      <input type="text" id="mcp-desc" placeholder="这个服务做什么" value="${esc(m.description || '')}" /></div>
     <div class="form-row"><label>传输类型</label>
       <div class="radio-group">
-        <label><input type="radio" name="mcp-transport" value="stdio" checked /> stdio(本地命令)</label>
-        <label><input type="radio" name="mcp-transport" value="http" /> http(远端)</label>
-        <label><input type="radio" name="mcp-transport" value="sse" /> sse(远端,旧式)</label>
+        <label><input type="radio" name="mcp-transport" value="stdio" ${isStdio ? 'checked' : ''} /> stdio(本地命令)</label>
+        <label><input type="radio" name="mcp-transport" value="http" ${m.transport === 'http' ? 'checked' : ''} /> http(远端)</label>
+        <label><input type="radio" name="mcp-transport" value="sse" ${m.transport === 'sse' ? 'checked' : ''} /> sse(远端,旧式)</label>
       </div>
     </div>
-    <div id="mcp-stdio-fields">
+    <div id="mcp-stdio-fields"${isStdio ? '' : ' style="display:none"'}>
       <div class="form-row"><label>启动命令</label>
-        <input type="text" id="mcp-command" placeholder="npx" /></div>
+        <input type="text" id="mcp-command" placeholder="npx" value="${esc(m.command || '')}" /></div>
       <div class="form-row"><label>参数(逗号分隔,可空)</label>
-        <input type="text" id="mcp-args" placeholder="-y,@modelcontextprotocol/server-filesystem,/tmp" /></div>
+        <input type="text" id="mcp-args" placeholder="-y,@modelcontextprotocol/server-filesystem,/tmp" value="${esc((m.args || []).join(','))}" /></div>
       <div class="form-row"><label>环境变量(KEY=V 逗号分隔,可空)</label>
-        <input type="text" id="mcp-env" placeholder="API_KEY=xxx" /></div>
+        <input type="text" id="mcp-env" placeholder="API_KEY=xxx" value="${esc(kvJoin(m.env))}" /></div>
     </div>
-    <div id="mcp-remote-fields" style="display:none">
+    <div id="mcp-remote-fields"${isStdio ? ' style="display:none"' : ''}>
       <div class="form-row"><label>端点 URL</label>
-        <input type="text" id="mcp-url" placeholder="https://mcp.example.com/mcp" /></div>
+        <input type="text" id="mcp-url" placeholder="https://mcp.example.com/mcp" value="${esc(m.url || '')}" /></div>
       <div class="form-row"><label>请求头(KEY=V 逗号分隔,可空)</label>
-        <input type="text" id="mcp-headers" placeholder="Authorization=Bearer xxx" /></div>
+        <input type="text" id="mcp-headers" placeholder="Authorization=Bearer xxx" value="${esc(kvJoin(m.headers))}" /></div>
     </div>
     <div class="modal-actions">
       <button class="btn" id="m-cancel">取消</button>
-      <button class="btn btn-primary" id="m-ok">添加</button>
+      <button class="btn btn-primary" id="m-ok">${edit ? '保存' : '添加'}</button>
     </div>
   `);
   // 按传输类型切换字段区
@@ -977,7 +992,7 @@ function openAddMcpServerModal() {
     await loadAll();
     closeModal();
     render();
-    toast(`已添加 MCP server: ${name}`);
+    toast(edit ? `已保存 MCP server: ${name}` : `已添加 MCP server: ${name}`);
   }));
 }
 
