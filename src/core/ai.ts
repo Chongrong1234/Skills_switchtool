@@ -114,7 +114,9 @@ async function chatCompletions(cfg: AiConfig, messages: ChatMessage[], maxTokens
       'Content-Type': 'application/json',
       Authorization: `Bearer ${cfg.apiKey}`,
     },
-    body: JSON.stringify({ model: cfg.model, messages, temperature: 0.2, max_tokens: maxTokens }),
+    // 不传 temperature:部分模型(如 kimi-k2 系)只允许 temperature=1,显式传值会被 400 拒绝;
+    // 省略时各家用模型自身默认值,兼容性最好,对推荐任务足够稳定
+    body: JSON.stringify({ model: cfg.model, messages, max_tokens: maxTokens }),
     signal: AbortSignal.timeout(aiTimeoutMs()),
   });
   if (!res.ok) {

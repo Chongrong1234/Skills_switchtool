@@ -4,7 +4,7 @@
 
 ## 项目概述
 
-**Skills SwitchTool**(`skills-switchtool`,v1.4.4):项目中心化的 Agent Skills 管理工具。交互模式仿照 cc-switch:**中央存储 + 切换 + 写入目标工具配置位置 + 快照可回滚**。
+**Skills SwitchTool**(`skills-switchtool`,v1.4.5):项目中心化的 Agent Skills 管理工具。交互模式仿照 cc-switch:**中央存储 + 切换 + 写入目标工具配置位置 + 快照可回滚**。
 
 核心概念:
 
