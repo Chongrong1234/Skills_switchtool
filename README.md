@@ -1,88 +1,81 @@
 <div align="center">
 
-<img src="build/icon.png" width="110" alt="Skills SwitchTool" />
-
 # 🛠 Skills SwitchTool
 
-### 按项目管理 Agent Skills:一个项目一套技能组合,模型不再调错技能
+**Per-project Agent Skills management: one skill set per project — the model stops picking the wrong skill.**
 
-[![Version](https://img.shields.io/badge/version-1.4.10-blue.svg)](https://github.com/Chongrong1234/Skills_switchtool/releases)
-[![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](https://nodejs.org)
-[![Runtime Deps](https://img.shields.io/badge/runtime%20deps-2-orange.svg)](package.json)
-[![Platform](https://img.shields.io/badge/platform-Linux%20%C2%B7%20Windows%20%C2%B7%20macOS-lightgrey.svg)](electron-builder.yml)
-
-**Electron 桌面 App · CLI 终端可视化面板,共享同一份数据**
+**English** · [中文](README.zh-CN.md)
 
 </div>
 
 ---
 
-## 简介
+## Introduction
 
-### 问题:全局 skills 一多,模型就开始"串台"
+### The problem: once global skills pile up, the model starts "crossing wires"
 
-Agent skills 默认是**全局共享**的:所有项目用过的 skills 都堆在同一个目录里,模型每接一个任务都会把全部 skills 扫一遍。skills 越积越多,问题就来了:
+Agent skills are **global by default**: every skill ever installed sits in one shared directory, and the model scans all of them on every task. As skills pile up:
 
-- 写后端接口时,模型却调用了上个前端项目留下的 `banner-design`,**任务跑偏**;
-- 同类 skill 装了好几份(比如三套不同的代码规范),模型随机挑一个用,**输出忽左忽右**;
-- 临时加的 skill 忘了撤,长期污染上下文——token 多花了,活还干错了。
+- While writing a backend API, the model invokes `banner-design` left over from a previous frontend project — **the task goes off track**;
+- Several similar skills are installed (e.g. three different code-style guides) and the model picks one at random — **output swings back and forth**;
+- A temporary skill never gets removed and pollutes the context for good — more tokens spent, and the job done wrong.
 
-根因只有一个:**skills 的管理单位是「全局」,而任务的边界是「项目」。**
+The root cause is simple: **skills are managed globally, but work is scoped per project.**
 
-### 解法:把 skills 的管理单位从「全局」降到「项目」
+### The fix: move skill management from "global" down to "project"
 
-Skills SwitchTool 让每个项目绑定**自己专属的技能组合**,只把这套组合物化到该项目的 agent 技能目录(支持 19 家:`.claude/skills`、`.kimi-code/skills`、`.cursor/skills`、`.codex/skills`、`.gemini/skills`、`.qwen/skills`、`.trae/skills`、`.dsh/skills`、`.factory/skills`、`.cline/skills`、`.continue/skills`、`.crush/skills` 等,含通用互操作目录 `.agents/skills`)。模型在这个项目里工作时,**只看得到、只调得到属于这个项目的 skills**——前端项目里不会出现写作技能,后端项目里不会冒出设计技能,任务不再错乱。
+Skills SwitchTool lets every project bind **its own dedicated skill set**, and materializes only that set into the project's agent skill directories (19 agents supported: `.claude/skills`, `.kimi-code/skills`, `.cursor/skills`, `.codex/skills`, `.gemini/skills`, `.qwen/skills`, `.trae/skills`, `.dsh/skills`, `.factory/skills`, `.cline/skills`, `.continue/skills`, `.crush/skills`, and more — including the interoperable `.agents/skills`). While working in that project, **the model can only see and call the skills that belong to it** — no writing skills in a frontend project, no design skills popping up in a backend project.
 
 ```
-🎨 my-blog(前端项目)      → ui-styling + banner-design + design-tokens
-⚙️  api-server(后端服务)  → deploy-notes + api-design + sql-helper
-📝 writing(内容写作)      → brand + slides + copywriting
+🎨 my-blog (frontend)      → ui-styling + banner-design + design-tokens
+⚙️  api-server (backend)   → deploy-notes + api-design + sql-helper
+📝 writing (content)       → brand + slides + copywriting
 ```
 
-切换项目一行命令,技能跟着项目走:
+Switch projects with one command; the skills follow the project:
 
 ```bash
-ssw project switch api-server    # 激活项目 → 该项目的技能组合自动写入各 agent 目录
+ssw project switch api-server    # activate project → its skill set is written into each agent's directory
 ```
 
-工作方式仿照 [cc-switch](https://github.com/farion1231/cc-switch):**中央库统一存储 + 项目级技能组合 + 物化到目标工具配置位置 + 快照可回滚**。
+How it works: **one central library + per-project skill sets + materialization into each tool's config location + snapshot-based rollback**.
 
-### 亮点速览
+### Highlights
 
 | | |
 |---|---|
-| 🎯 **一项目一配方** | 每个项目绑定独立的「技能组合 + 目标 agents」,不同任务不同配方,互不干扰,随时增删重配 |
-| 🗃️ **中央库,唯一事实来源** | 全部 skills 统一收在 `~/.skills-switch/library/`,项目组合只是引用,改一处处处生效 |
-| 🔄 **一键切换** | `switch` 一下整组换装:GUI 点项目名、CLI 敲一行,技能组合即刻写入各 agent 项目目录 |
-| 🔗 **symlink 物化** | 默认软链写入,库更新即时生效;失败自动降级 copy 并告警;同名冲突先移入快照再覆盖 |
-| 🔌 **MCP 服务也按项目管** | MCP server 集中在库里登记(stdio/http/sse),按项目绑定;apply 时**合并**写入各 agent 的项目级配置(`.mcp.json`、`.kimi-code/mcp.json`、`.cursor/mcp.json`、`.codex/config.toml`),保留你已有的其它配置,同样走快照可回滚 |
-| 📸 **快照可回滚** | 每次 apply 自动快照(每项目留 5 份),配错了一键还原 |
-| 🌐 **全局共享** | 项目配方之外,还可把选定 skills 物化到各 agent 的**用户级**目录(`~/.claude/skills` 等):一次配置,该 agent 的所有项目共享 |
-| 📦 **配置库整体搬家** | `ssw profile export/import` 把技能库 + MCP + 项目档案 + 全局共享打成单文件,跨机器、跨平台共享同一份配置;导入幂等 |
-| 🤝 **收养既有 skills** | `ssw skill adopt` 把各 agent 目录里已存在的 skills 一键收进中央库,先纳管再统一分发;`--all` 一次扫描所有 agent(同名去重);桌面 App **启动时自动收养**本机各 agent 的用户级 skills,打开即见 |
-| 🔍 **智能推荐 + 内置推荐库** | 识别项目技术栈推荐 GitHub 高 star skills;另内置 111 个精选 skill 仓库 + 26 个常用 MCP server / 13 大类(分类带条目统计),skills 与 MCP 分流浏览、分开安装,离线可用;断网安静降级 |
-| 🤖 **AI 技能推荐** | 填一句开发需求,AI 读本地技能库给出推荐供勾选绑定,并**联网搜 GitHub** 相关仓库(模型给搜索关键词,需求英文词兜底;可一键安装并绑定);新建项目与**项目详情页可多次调用**;模型/baseUrl/API Key 在设置里配,官方端点或 OpenAI 兼容中转站均可(预设 Kimi/DeepSeek/OpenAI/OpenRouter);未配置或断网安静降级 |
-| 🔥 **热度排序选配** | 给项目/全局共享选技能时,常用的排前面:记录每个 skill 的使用次数(绑定即计、只增不减)、GitHub 仓库 stars(安装/更新时采集),再结合项目技术栈与名称关键词匹配加权排序;AI 推荐也把 stars/用量作为相关度相近时的优先依据 |
-| 🖥️ **两种打开方式** | Electron 桌面 App 点点点、CLI 终端可视化面板——同一份核心,同一份状态 |
-| 🪶 **极致轻量** | 运行时仅 2 个依赖(express + commander);CLI 可打成零依赖单文件,拷到服务器即用 |
+| 🎯 **One recipe per project** | Each project binds its own "skill set + target agents". Different tasks, different recipes — no interference, reconfigure anytime |
+| 🗃️ **Central library, single source of truth** | All skills live in `~/.skills-switch/library/`; project sets are just references — change once, applies everywhere |
+| 🔄 **One-command switch** | One `switch` swaps the whole set: click a project in the GUI or type one CLI line, and the skill set lands in each agent's project directory |
+| 🔗 **Symlink materialization** | Symlinks by default so library updates take effect instantly; auto-falls back to copy with a warning on failure; same-name conflicts are moved into a snapshot before being overwritten |
+| 🔌 **MCP servers, also per project** | MCP servers are registered centrally (stdio/http/sse) and bound per project; apply **merges** them into each agent's project-level config (`.mcp.json`, `.kimi-code/mcp.json`, `.cursor/mcp.json`, `.codex/config.toml`), keeping your existing entries — snapshot & rollback included |
+| 📸 **Snapshots & rollback** | Every apply takes a snapshot (last 5 kept per project); roll back with one command if you misconfigure |
+| 🌐 **Global sharing** | Beyond project recipes, selected skills can be materialized to each agent's **user-level** directory (`~/.claude/skills` etc.): configure once, shared by every project of that agent |
+| 📦 **Move the whole library** | `ssw profile export/import` packs the skill library + MCP + project profiles + global profile into a single file — the same setup across machines and platforms; idempotent import |
+| 🤝 **Adopt existing skills** | `ssw skill adopt` pulls skills already sitting in agent directories into the central library — adopt first, then distribute centrally; `--all` scans every agent (deduped by name); the desktop app **auto-adopts on startup** the user-level skills of every agent on the machine, visible as soon as it opens |
+| 🔍 **Smart recommendations + built-in catalog** | Detects the project's tech stack and recommends high-star GitHub skills; also ships 111 curated skill repos + 26 common MCP servers in 13 categories (with per-category counts), skills and MCP browsed/installed separately, works offline; degrades quietly without network |
+| 🤖 **AI skill recommendations** | Describe your needs; AI reads the local library and recommends skills to tick & bind, and also **searches GitHub online** (model-provided keywords, falling back to English words from your text; one-click install & bind); callable repeatedly from the new-project dialog and the **project detail page**; model/base URL/API key in settings — official endpoints or any OpenAI-compatible relay (presets: Kimi/DeepSeek/OpenAI/OpenRouter); degrades quietly when unconfigured or offline |
+| 🔥 **Optional popularity ranking** | Frequently used skills float to the top: per-skill usage counts (counted on bind, never decrease), GitHub stars (collected on install/update), weighted with project tech-stack and name keyword matching; AI recommendations also use stars/usage as a tie-breaker |
+| 🖥️ **Two ways to open** | Electron desktop app for point-and-click, or a keyboard-driven CLI terminal panel — same core, same state |
+| 🪶 **Extremely lightweight** | Only 2 runtime deps (express + commander); the CLI builds into a zero-dependency single file, copy it to any server and run |
 
-## 下载(从头开始,复制粘贴即用)
+## Download
 
-所有发布版本都在 [GitHub Releases](https://github.com/Chongrong1234/Skills_switchtool/releases) 页面。以下命令均可直接复制粘贴;示例用最新版 **v1.4.10**,下载历史版本把版本号换掉即可(现有:`v1.4.10`、`v1.4.5`、`v1.2.0`)。
+All releases live on the [GitHub Releases](https://github.com/Chongrong1234/Skills_switchtool/releases) page. Every command below is copy-paste ready;
 
-### Linux 桌面版(AppImage)
+### Linux desktop (AppImage)
 
 ```bash
-# 下载
+# Download
 curl -L -o Skills.SwitchTool.AppImage \
   https://github.com/Chongrong1234/Skills_switchtool/releases/download/v1.4.10/Skills.SwitchTool-1.4.10.AppImage
 
-# 赋可执行权限并运行(也可在文件管理器里双击)
+# Make it executable and run (or double-click in your file manager)
 chmod +x Skills.SwitchTool.AppImage
 ./Skills.SwitchTool.AppImage
 ```
 
-不想记版本号,一条命令永远拿最新版:
+Don't want to remember version numbers? One command always fetches the latest:
 
 ```bash
 url=$(curl -s https://api.github.com/repos/Chongrong1234/Skills_switchtool/releases/latest \
@@ -91,134 +84,124 @@ url=$(curl -s https://api.github.com/repos/Chongrong1234/Skills_switchtool/relea
   && chmod +x Skills.SwitchTool.AppImage && ./Skills.SwitchTool.AppImage
 ```
 
-> 容器/受限环境中启动需追加 `--no-sandbox`。
+> In containers or restricted environments, start it with `--no-sandbox`.
 
-### Windows 桌面版(NSIS 安装包,中文安装向导)
+### Windows desktop (NSIS installer, Chinese wizard)
 
-浏览器直接下载:[Skills.SwitchTool.Setup.1.4.10.exe](https://github.com/Chongrong1234/Skills_switchtool/releases/download/v1.4.10/Skills.SwitchTool.Setup.1.4.10.exe),双击按向导安装(可选安装目录)。
+Download in your browser: [Skills.SwitchTool.Setup.1.4.10.exe](https://github.com/Chongrong1234/Skills_switchtool/releases/download/v1.4.10/Skills.SwitchTool.Setup.1.4.10.exe), double-click and follow the wizard (custom install directory supported).
 
-或在 PowerShell 中复制粘贴:
+Or copy-paste in PowerShell:
 
 ```powershell
 curl.exe -L -o Skills.SwitchTool.Setup.exe `
   "https://github.com/Chongrong1234/Skills_switchtool/releases/download/v1.4.10/Skills.SwitchTool.Setup.1.4.10.exe"
-.\Skills.SwitchTool.Setup.exe        # 向导式安装;静默安装用 .\Skills.SwitchTool.Setup.exe /S
+.\Skills.SwitchTool.Setup.exe        # wizard install; silent install: .\Skills.SwitchTool.Setup.exe /S
 ```
 
-### macOS 桌面版(dmg,Apple Silicon)
+### macOS desktop (dmg, Apple Silicon)
 
 ```bash
 curl -L -o Skills.SwitchTool.dmg \
   https://github.com/Chongrong1234/Skills_switchtool/releases/download/v1.4.10/Skills.SwitchTool-1.4.10-arm64.dmg
-open Skills.SwitchTool.dmg    # 拖进「应用程序」;未签名,首次打开需右键 →「打开」
+open Skills.SwitchTool.dmg    # drag into Applications; unsigned — right-click → Open on first launch
 ```
 
-### 服务器 / CLI 单文件(零依赖)
+### Server / single-file CLI (zero dependencies)
 
-CLI 单文件不随 Release 发布,从源码构建一次即可(只需 Node ≥ 18):
+The single-file CLI is not attached to releases; build it once from source (only Node ≥ 18 needed):
 
 ```bash
 git clone https://github.com/Chongrong1234/Skills_switchtool.git
 cd Skills_switchtool
 npm install
-npm run dist:cli            # 产出 release/cli/ssw.mjs:零依赖,拷到任意服务器即用
+npm run dist:cli            # produces release/cli/ssw.mjs: zero deps, copy to any server and run
 
-./release/cli/ssw.mjs doctor     # 先自检环境
-./release/cli/ssw.mjs            # TTY 下裸跑进入交互式终端面板
+./release/cli/ssw.mjs doctor     # check the environment first
+./release/cli/ssw.mjs            # run bare in a TTY to enter the interactive terminal panel
 ```
 
-要从源码构建桌面 App 或跑测试,见下文「使用方法」。
+To build the desktop app from source or run the tests, see Usage below.
 
-## 使用方法
+## Usage
 
-### 安装与构建
+### Install & build
 
 ```bash
 git clone https://github.com/Chongrong1234/Skills_switchtool.git
 cd Skills_switchtool
-npm install        # 安装依赖(运行时依赖仅 express + commander)
-npm run build      # tsc 编译到 dist/
-npm test           # vitest 全量测试
+npm install        # install dependencies (only 2 runtime deps: express + commander)
+npm run build      # tsc compiles to dist/
+npm test           # full vitest suite
 ```
 
-数据根目录默认 `~/.skills-switch/`,可用 `SSW_HOME` 环境变量覆盖。
+The data root defaults to `~/.skills-switch/`; override it with the `SSW_HOME` environment variable.
 
-### 三分钟上手
+### Three-minute quickstart
 
 ```bash
-npm run app        # 编译并启动桌面 App(需图形环境)
+npm run app        # build & launch the desktop app (needs a graphical environment)
 ```
 
-然后:**新建项目(绑定目录)→ 勾选 skills 和目标 agents → 一键 apply**。技能集即写入各 agent 的项目级 skills 目录;之后切换项目,技能跟着走。
+Then: **create a project (bind a directory) → tick skills and target agents → one-click apply**. The skill set is written into each agent's project-level skills directory; switch projects afterwards and the skills follow.
 
-> 💡 没有图形环境?用 `npm run dist:cli` 打出零依赖单文件 CLI 拷到服务器(见下文「单文件分发」)。
+> 💡 No GUI? Use `npm run dist:cli` to build the zero-dependency single-file CLI and copy it to your server (see Single-file distribution below).
 
-### 桌面 App(Electron)
+### Desktop app (Electron)
 
 ```bash
-npm run app    # 开发运行:先 tsc 编译,再 electron . 起桌面窗口(需图形环境)
-npm run dist   # 打包:编译 + electron-builder,产出 Linux AppImage 到 release/
+npm run app    # dev run: tsc compile, then electron . opens the window (needs a graphical environment)
+npm run dist   # package: compile + electron-builder, produces the Linux AppImage in release/
 ```
 
-AppImage 用法:
+AppImage usage:
 
 ```bash
 chmod +x "release/Skills SwitchTool-"*.AppImage
-./release/Skills\ SwitchTool-*.AppImage        # 命令行运行;也可文件管理器中双击
+./release/Skills\ SwitchTool-*.AppImage        # run from the terminal; or double-click in a file manager
 ```
 
-在容器/受限环境(或部分无内核沙箱支持的系统)中,Electron 可能需要追加 `--no-sandbox` 才能启动。
+In containers/restricted environments (or systems without kernel sandbox support), Electron may need `--no-sandbox` to start.
 
-### CLI(终端可视化面板)
+### CLI (visual terminal panel)
 
-CLI(`ssw`,别名 `skills`)的主打开方式是**交互式终端面板**:在终端里不带任何参数直接运行即进入,日常操作全部在面板里完成:
+The CLI (`ssw`, alias `skills`) is primarily an **interactive terminal panel**: run it with no arguments in a terminal and you're in — all daily operations happen inside the panel:
 
 ```bash
-ssw        # 或 skills —— 全键盘操作的可视化面板
+ssw        # or skills — a keyboard-driven visual panel
 ```
 
 ```
-↑↓ 浏览项目,Enter 切换并 apply(技能组合写入各 agent 目录)
-n 新建项目(名称/路径/agents/模式,可填 AI 需求自动推荐绑定)
-x 删除项目 / a apply / u unapply / r 回滚
-s 技能库 / m MCP 库 / c 内置推荐库(c 切分类,k 切 skills/MCP)
-i AI 推荐 / g 全局共享 / d 环境自检 / q 退出
+↑↓ browse projects · Enter switches & applies (skill set written into each agent's directory)
+n new project (name/path/agents/mode, optional AI requirement auto-recommended & bound)
+x delete project / a apply / u unapply / r rollback
+s skill library / m MCP registry / c built-in catalog (c cycle categories, k toggle skills/MCP)
+i AI recommend / g global sharing / d doctor / q quit
 ```
 
-面板、子命令与桌面 App 共用同一份状态(`~/.skills-switch/`),任一端的改动处处可见。
+The panel, the subcommands and the desktop app all share the same state (`~/.skills-switch/`) — a change anywhere is visible everywhere.
 
-纯命令行子命令面向脚本与自动化场景(管道等非 TTY 环境下裸跑会打印帮助),常用的有:`doctor` 环境自检、`project create/switch/apply`、`skill add/list/adopt`、`catalog install`、`mcp add`、`global apply`、`profile export/import`、`ai recommend` 等;完整清单与参数用 `ssw --help` 或 `ssw <命令> --help` 查看。约定:项目与 skill 支持 `id|name` 寻址;全局 `--json` 输出方便脚本化;错误打 stderr、退出码非零。
+Plain subcommands target scripting & automation (running bare in a non-TTY prints help). Common ones: `doctor` environment check, `project create/switch/apply`, `skill add/list/adopt`, `catalog install`, `mcp add`, `global apply`, `profile export/import`, `ai recommend`, etc.; the full list and flags are under `ssw --help` or `ssw <command> --help`. Conventions: projects and skills are addressed by `id|name`; global `--json` output for scripting; errors go to stderr with a non-zero exit code.
 
-本机使用:`npm run build` 后 `node dist/cli.js ...`(`npm link` 后可直接 `ssw ...` 或 `skills ...`)。
+Local use: after `npm run build`, run `node dist/cli.js ...` (or `npm link` to use `ssw ...` / `skills ...` directly).
 
-### 单文件分发(拷到服务器即用)
+### Single-file distribution (copy to any server)
 
 ```bash
-npm run dist:cli     # 产出 release/cli/ssw.mjs(esbuild 打包,零依赖,Node ≥ 18)
+npm run dist:cli     # produces release/cli/ssw.mjs (esbuild bundle, zero deps, Node ≥ 18)
 ```
 
-把 `ssw.mjs` 拷到任意服务器即可使用(`./ssw.mjs agents` 或 `node ssw.mjs agents`)。需要配置的只有一项:数据目录默认 `~/.skills-switch/`,可用 `SSW_HOME` 覆盖,如 `export SSW_HOME=/data/skills-switch`。
+Copy `ssw.mjs` to any server and run it (`./ssw.mjs agents` or `node ssw.mjs agents`). Only one thing to configure: the data directory defaults to `~/.skills-switch/`; override with `SSW_HOME`, e.g. `export SSW_HOME=/data/skills-switch`.
 
-### 多平台与注意事项
+### Platforms & notes
 
-| 平台 | 产物 | 构建方式 |
+| Platform | Artifact | Build |
 |---|---|---|
-| Linux | `release/Skills SwitchTool-<版本>.AppImage` | `npm run dist` |
-| Windows | `release/Skills SwitchTool Setup <版本>.exe`(NSIS,中文安装界面) | `npx electron-builder --win nsis`,或 CI |
-| macOS | dmg + zip(**未签名**:首次打开需右键 →「打开」) | CI(macOS runner) |
-| 任意(含服务器) | `release/cli/ssw.mjs`(零依赖单文件 CLI) | `npm run dist:cli` |
+| Linux | `release/Skills SwitchTool-<version>.AppImage` | `npm run dist` |
+| Windows | `release/Skills SwitchTool Setup <version>.exe` (NSIS, Chinese installer UI) | `npx electron-builder --win nsis`, or CI |
+| macOS | dmg + zip (**unsigned**: right-click → Open on first launch) | CI (macOS runner) |
+| Any (incl. servers) | `release/cli/ssw.mjs` (zero-dependency single-file CLI) | `npm run dist:cli` |
 
-**Windows 特别说明**:
+**Windows notes**:
 
-- apply 默认 symlink;未开开发者模式/非管理员时创建 symlink 会被拒绝(EPERM),此时**自动降级为 copy 并在输出中告警**(降级后改动库需重新 apply 才生效)。也可建项目时直接选 `--mode copy`。
-- 从 GitHub 安装/更新 skill 需要系统装有 **git** 且在 PATH;缺失时会收到可读报错而不是崩溃。
-
----
-
-<div align="center">
-
-**如果这个小工具帮你驯服了到处乱放的 skills,就点个 ⭐ Star 吧!**
-
-发现问题?[提个 Issue](https://github.com/Chongrong1234/Skills_switchtool/issues) · 想加 agent 适配器?一个 spec 文件就能搞定,欢迎 PR 🎉
-
-</div>
+- apply defaults to symlink; without Developer Mode / admin rights, symlink creation is denied (EPERM) — it then **automatically falls back to copy with a warning in the output** (after the fallback, library changes require a re-apply to take effect). You can also pick `--mode copy` when creating the project.
+- Installing/updating skills from GitHub requires **git** installed and on PATH; if it's missing you get a readable error instead of a crash.
