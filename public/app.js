@@ -613,6 +613,9 @@ function openNewProjectModal() {
     const project = await api('POST', '/api/projects', body);
     state.selectedProjectId = project.id;
     await loadAll();
+    // 立即刷新侧栏/主区(render 只动 #app 不动 #modal-root,弹窗保持打开):
+    // 否则用户创建后直接取消/关闭弹窗,项目列表要到下次操作才刷新
+    render();
     // 允许同名项目,但同名会让寻址歧义,主动提醒
     if (state.projects.some((p) => p.name === project.name && p.id !== project.id)) {
       toast(`已存在同名项目「${project.name}」,注意区分`, 'err');
