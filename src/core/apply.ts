@@ -67,6 +67,37 @@ async function isSameSkillCopy(dest: string, src: string): Promise<boolean> {
   }
 }
 
+/** copy 物化的归属标记:写进副本根目录,作为"这是我们复制的"硬证据(对 agent 是惰性隐藏文件) */
+export const COPY_MARKER = '.ssw-copy';
+
+/** 递归列出目录内文件的相对路径(副本归属比对用;不含目录项) */
+async function listRelFiles(root: string): Promise<string[]> {
+  const out: string[] = [];
+  async function walk(dir: string, rel: string): Promise<void> {
+    for (const ent of await fs.readdir(dir, { withFileTypes: true })) {
+      const r = rel ? `${rel}/${ent.name}` : ent.name;
+      if (ent.isDirectory()) await walk(path.join(dir, ent.name), r);
+      else if (ent.isFile()) out.push(r);
+    }
+  }
+  await walk(root, '');
+  return out;
+}
+
+/**
+ * 副本归属判定(unapply 用,宁严勿宽):
+ * 有归属标记 → 是我们物化的;无标记(旧版本物化的副本)→ 除 SKILL.md 一致外,
+ * 还要求 dest 不含 src 之外的多余文件——防止把用户手工放置的同名同内容、
+ * 内有用户自己追加文件的目录整目录删掉。
+ */
+async function isOurCopy(dest: string, src: string): Promise<boolean> {
+  if (await pathExists(path.join(dest, COPY_MARKER))) return true;
+  if (!(await isSameSkillCopy(dest, src))) return false;
+  const srcFiles = new Set(await listRelFiles(src));
+  const destFiles = await listRelFiles(dest);
+  return destFiles.every((f) => srcFiles.has(f));
+}
+
 /** 按 id 列表从注册表解析 entries;悬空引用(注册表被手改/损坏等)记 warning 并跳过,不中断 */
 export async function resolveSkills(skillIds: string[], warnings: string[]): Promise<SkillEntry[]> {
   const registry = await readRegistry();
@@ -126,6 +157,8 @@ export async function materializeSkills(
     }
     if (mode === 'copy') {
       await fs.cp(src, dest, { recursive: true });
+      // 落归属标记:unapply 的归属硬证据(见 isOurCopy)
+      await fs.writeFile(path.join(dest, COPY_MARKER), 'skills-switchtool copy 物化标记\n', 'utf8');
     }
     recordCreated(snap, agentId, dest);
     result.applied.push({ agentId, skillName: skill.name, mode, target: dest });
@@ -134,7 +167,8 @@ export async function materializeSkills(
 
 /**
  * 从某个 skills 目录移除我们之前物化的 entries(只删"确定是我们创建的"):
- * symlink 需指向库内;copy 目录需与库内 SKILL.md 内容一致。返回移除的路径。
+ * symlink 需指向库内;copy 目录需带归属标记,或为无多余文件的旧版一致副本(见 isOurCopy)。
+ * 返回移除的路径。
  */
 export async function removeMaterialized(skillsDir: string, skills: SkillEntry[]): Promise<string[]> {
   const removed: string[] = [];
@@ -148,7 +182,7 @@ export async function removeMaterialized(skillsDir: string, skills: SkillEntry[]
         const real = await fs.realpath(dest);
         ours = real === (await fs.realpath(src).catch(() => ''));
       } else if (st.isDirectory()) {
-        ours = await isSameSkillCopy(dest, src);
+        ours = await isOurCopy(dest, src);
       }
     } catch {
       ours = false;
@@ -195,7 +229,8 @@ export async function applyProject(projectId: string): Promise<ApplyResult> {
 
 /**
  * unapply:把该项目 skills 在各 agent 目录下的物化结果移除。
- * symlink:指向库内则删;copy:目录的 SKILL.md 与库内一致(即是我们复制的)才删。
+ * symlink:指向库内则删;copy:带归属标记 .ssw-copy 才删(旧版无标记副本需 SKILL.md 一致
+ * 且无库外多余文件)——见 isOurCopy。
  * 同时从各 agent 的 MCP 配置中摘掉项目绑定的 server 条目。
  */
 export async function unapplyProject(projectId: string): Promise<{ removed: string[] }> {

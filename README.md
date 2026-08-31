@@ -6,7 +6,7 @@
 
 ### 按项目管理 Agent Skills:一个项目一套技能组合,模型不再调错技能
 
-[![Version](https://img.shields.io/badge/version-1.4.5-blue.svg)](https://github.com/Chongrong1234/Skills_switchtool/releases)
+[![Version](https://img.shields.io/badge/version-1.4.6-blue.svg)](https://github.com/Chongrong1234/Skills_switchtool/releases)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](https://nodejs.org)
 [![Runtime Deps](https://img.shields.io/badge/runtime%20deps-2-orange.svg)](package.json)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%C2%B7%20Windows%20%C2%B7%20macOS-lightgrey.svg)](electron-builder.yml)
@@ -60,7 +60,7 @@ ssw project switch api-server    # 激活项目 → 该项目的技能组合自�
 | 🌐 **全局共享** | 项目配方之外,还可把选定 skills 物化到各 agent 的**用户级**目录(`~/.claude/skills` 等):一次配置,该 agent 的所有项目共享 |
 | 📦 **配置库整体搬家** | `ssw profile export/import` 把技能库 + MCP + 项目档案 + 全局共享打成单文件,跨机器、跨平台共享同一份配置;导入幂等 |
 | 🤝 **收养既有 skills** | `ssw skill adopt` 把各 agent 目录里已存在的 skills 一键收进中央库,先纳管再统一分发 |
-| 🔍 **智能推荐 + 内置推荐库** | 识别项目技术栈推荐 GitHub 高 star skills;另内置 99 个精选 skill 仓库 + 25 个常用 MCP server / 13 大类(分类带条目统计),skills 与 MCP 分流浏览、分开安装,离线可用;断网安静降级 |
+| 🔍 **智能推荐 + 内置推荐库** | 识别项目技术栈推荐 GitHub 高 star skills;另内置 111 个精选 skill 仓库 + 26 个常用 MCP server / 13 大类(分类带条目统计),skills 与 MCP 分流浏览、分开安装,离线可用;断网安静降级 |
 | 🤖 **AI 技能推荐** | 新建项目时填一句开发需求,AI 读本地技能库给出初步推荐供勾选绑定;模型/baseUrl/API Key 在设置里配,官方端点或 OpenAI 兼容中转站均可(预设 Kimi/DeepSeek/OpenAI/OpenRouter);未配置或断网安静降级 |
 | 🔥 **热度排序选配** | 给项目/全局共享选技能时,常用的排前面:记录每个 skill 的使用次数(绑定即计、只增不减)、GitHub 仓库 stars(安装/更新时采集),再结合项目技术栈与名称关键词匹配加权排序;AI 推荐也把 stars/用量作为相关度相近时的优先依据 |
 | 🖥️ **两种打开方式** | Electron 桌面 App 点点点、纯 CLI/终端面板——同一份核心,同一份状态 |
@@ -68,14 +68,14 @@ ssw project switch api-server    # 激活项目 → 该项目的技能组合自�
 
 ## 下载(从头开始,复制粘贴即用)
 
-所有发布版本都在 [GitHub Releases](https://github.com/Chongrong1234/Skills_switchtool/releases) 页面。以下命令均可直接复制粘贴;示例用最新版 **v1.4.5**,下载历史版本把版本号换掉即可(现有:`v1.4.5`、`v1.2.0`)。
+所有发布版本都在 [GitHub Releases](https://github.com/Chongrong1234/Skills_switchtool/releases) 页面。以下命令均可直接复制粘贴;示例用最新版 **v1.4.6**,下载历史版本把版本号换掉即可(现有:`v1.4.6`、`v1.4.5`、`v1.2.0`)。
 
 ### Linux 桌面版(AppImage)
 
 ```bash
 # 下载
 curl -L -o Skills.SwitchTool.AppImage \
-  https://github.com/Chongrong1234/Skills_switchtool/releases/download/v1.4.5/Skills.SwitchTool-1.4.5.AppImage
+  https://github.com/Chongrong1234/Skills_switchtool/releases/download/v1.4.6/Skills.SwitchTool-1.4.6.AppImage
 
 # 赋可执行权限并运行(也可在文件管理器里双击)
 chmod +x Skills.SwitchTool.AppImage
@@ -95,13 +95,13 @@ url=$(curl -s https://api.github.com/repos/Chongrong1234/Skills_switchtool/relea
 
 ### Windows 桌面版(NSIS 安装包,中文安装向导)
 
-浏览器直接下载:[Skills.SwitchTool.Setup.1.4.5.exe](https://github.com/Chongrong1234/Skills_switchtool/releases/download/v1.4.5/Skills.SwitchTool.Setup.1.4.5.exe),双击按向导安装(可选安装目录)。
+浏览器直接下载:[Skills.SwitchTool.Setup.1.4.6.exe](https://github.com/Chongrong1234/Skills_switchtool/releases/download/v1.4.6/Skills.SwitchTool.Setup.1.4.6.exe),双击按向导安装(可选安装目录)。
 
 或在 PowerShell 中复制粘贴:
 
 ```powershell
 curl.exe -L -o Skills.SwitchTool.Setup.exe `
-  "https://github.com/Chongrong1234/Skills_switchtool/releases/download/v1.4.5/Skills.SwitchTool.Setup.1.4.5.exe"
+  "https://github.com/Chongrong1234/Skills_switchtool/releases/download/v1.4.6/Skills.SwitchTool.Setup.1.4.6.exe"
 .\Skills.SwitchTool.Setup.exe        # 向导式安装;静默安装用 .\Skills.SwitchTool.Setup.exe /S
 ```
 
@@ -109,7 +109,7 @@ curl.exe -L -o Skills.SwitchTool.Setup.exe `
 
 ```bash
 curl -L -o Skills.SwitchTool.dmg \
-  https://github.com/Chongrong1234/Skills_switchtool/releases/download/v1.4.5/Skills.SwitchTool-1.4.5-arm64.dmg
+  https://github.com/Chongrong1234/Skills_switchtool/releases/download/v1.4.6/Skills.SwitchTool-1.4.6-arm64.dmg
 open Skills.SwitchTool.dmg    # 拖进「应用程序」;未签名,首次打开需右键 →「打开」
 ```
 

@@ -1,6 +1,6 @@
 {
   "name": "skills-switchtool",
-  "version": "1.4.5",
+  "version": "1.4.6",
   "description": "项目中心化的 Agent Skills 管理工具(Web GUI / Electron 桌面 App / CLI)",
   "keywords": [
     "agent-skills",
@@ -20,6 +20,7 @@
   "homepage": "https://github.com/Chongrong1234/Skills_switchtool#readme",
   "type": "module",
   "main": "electron/main.mjs",
+  "desktopName": "Skills SwitchTool",
   "bin": {
     "ssw": "dist/cli.js",
     "skills": "dist/cli.js"
@@ -35,7 +36,9 @@
     "test": "vitest run",
     "app": "npm run build && electron .",
     "dist": "npm run build && electron-builder --linux AppImage",
-    "dist:cli": "npm run build && node scripts/build-cli.mjs"
+    "dist:cli": "npm run build && node scripts/build-cli.mjs",
+    "prepack": "npm run build",
+    "release": "node scripts/release.mjs"
   },
   "dependencies": {
     "commander": "^12.1.0",

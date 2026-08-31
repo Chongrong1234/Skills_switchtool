@@ -40,6 +40,9 @@ export async function atomicWriteJson(file: string, data: unknown): Promise<void
   const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
   await fs.writeFile(tmp, JSON.stringify(data, null, 2), 'utf8');
   await renameWithRetry(tmp, file);
+  // 数据文件可能含密钥(ai.json 的 apiKey、mcps.json 的 env token):收窄为仅属主可读写,
+  // 对齐各家 CLI 凭据文件惯例。Windows 上 chmod 不映射 NTFS ACL,失败静默忽略。
+  await fs.chmod(file, 0o600).catch(() => {});
 }
 
 /** 容错读取 JSON 文件;不存在或损坏时返回 fallback */

@@ -4,7 +4,7 @@
 
 ## 项目概述
 
-**Skills SwitchTool**(`skills-switchtool`,v1.4.5):项目中心化的 Agent Skills 管理工具。交互模式仿照 cc-switch:**中央存储 + 切换 + 写入目标工具配置位置 + 快照可回滚**。
+**Skills SwitchTool**(`skills-switchtool`,v1.4.6):项目中心化的 Agent Skills 管理工具。交互模式仿照 cc-switch:**中央存储 + 切换 + 写入目标工具配置位置 + 快照可回滚**。
 
 核心概念:
 
@@ -40,6 +40,8 @@ npm test           # vitest run 全量测试
 npm run app        # 编译 + electron . 起桌面窗口(需图形环境)
 npm run dist       # 编译 + electron-builder,产出 Linux AppImage 到 release/
 npm run dist:cli   # 编译 + esbuild 打包单文件 CLI → release/cli/ssw.mjs(零依赖)
+npm run release    # 一键发布:干净工作区检查 → 全量测试 → 打 v<version> tag → push main+tag
+                   #   (tag 触发 release.yml 三平台构建;防"合并后忘打 tag"——v1.3.0/v1.4.0~1.4.4 曾漏发)
 ```
 
 CLI 本机使用:`npm run build` 后 `node dist/cli.js ...`(`package.json` 已注册 `bin: ssw`/`skills`)。图标用 `node scripts/make-icon.mjs` 重新生成(纯 Node 手写 PNG → `build/icon.png`)。**版本号只改 `package.json`**:CLI 经 `src/version.ts` 运行时读取自动跟随;单文件分发由 `scripts/build-cli.mjs` 在 esbuild 打包时 define 注入 `__SSW_VERSION__`。
@@ -53,7 +55,8 @@ src/
                          #   ensureSkeleton() 启动时建目录骨架
     types.ts             # SkillEntry(含 stars/useCount/lastUsedAt 热度字段) / McpEntry / Project / ProjectsData / ApplyMode
     registry.ts          # registry.json 读写;atomicWriteJson(tmp+rename 原子写,renameWithRetry 退避重试
-                         #   Windows 杀软瞬时持锁的 EPERM)、readJsonSafe(损坏容错);
+                         #   Windows 杀软瞬时持锁的 EPERM;写完 chmod 0o600——ai.json/mcps.json 含密钥,
+                         #   对齐各家 CLI 凭据文件惯例,Windows 上静默跳过)、readJsonSafe(损坏容错);
                          #   markSkillsUsed:绑定进项目/全局共享时 useCount+1、刷新 lastUsedAt(只增不减)
     library.ts           # 中央库:github→git clone --depth 1(可选 subdir 子目录为扫描根,registerSkillsIn 可单测;
                          #   subdir 只允许 '/' 分隔,显式拒绝 '\' 与 ':'——防 Windows 路径穿越到库外被递归删除)、
@@ -79,6 +82,8 @@ src/
                          #   upsertMcp 按 transport 裁剪字段(远端不存 command 等);removeMcp 解除项目绑定;McpError
     apply.ts             # applyProject / unapplyProject:物化 skills + MCP 到各 agent 目录;Windows 上 symlink 用 junction(免管理员);
                          #   幂等(已是指向库的 symlink 或 SKILL.md 一致的 copy 副本则跳过);中途失败清理未 finalize 的空快照;
+                         #   copy 物化落归属标记 .ssw-copy,unapply 的 copy 归属判定(isOurCopy)= 有标记,
+                         #   或旧版无标记副本要求 SKILL.md 一致且无 src 之外的多余文件(防误删用户手工同名目录);
                          #   materializeSkills / removeMaterialized / resolveSkills 导出供 global.ts 复用
     apply-mcp.ts         # MCP 物化:合并写各 agent 项目级 MCP 配置;JSON 系(mcpServers)结构化合并 +
                          #   codex config.toml 块级文本合并([mcp_servers.*] 段,自写最小 TOML 生成/段删除,不引依赖);
@@ -103,9 +108,12 @@ src/
                          #   importSkillsCode 幂等跳过已有、单仓失败不中断;installFn 可注入(测试)
     profile.ts           # 配置库导出/导入:ssw-profile@1 bundle(skills+mcps+projects+global+local 技能实体 base64,
                          #   单 skill >20MB 跳过并告警);导入幂等(github 按仓重克隆+upsert 原条目保绑定、
-                         #   local 落库带路径穿越防护、项目 id 冲突换新 id、activeProjectId/全局档案仅空缺时采用);
+                         #   local 落库带路径穿越防护、项目 id 冲突换新 id、activeProjectId/全局档案仅空缺时采用
+                         #   且全部幂等跳过时也落盘);bundle 是外部输入:导入前全量预检条目 id/name
+                         #   (assertSafeBundleEntry,口径同 assertValidSkillName/normalizeSubdir),
+                         #   local 落盘目标追加"必须在库目录内"前缀断言双保险;
                          #   installFn 可注入(测试)
-    catalog.ts           # 内置精选推荐库:99 个高 star skill 仓库 + 25 个常用 MCP server / 13 大类
+    catalog.ts           # 内置精选推荐库:111 个高 star skill 仓库 + 26 个常用 MCP server / 13 大类
                          #   (dev/research/writing/marketing/product/design/media/knowledge/data-ai/robotics/
                          #   devops/security/productivity,分类无空档);静态数据离线可用,stars 为收录时快照
                          #   (无公开仓库的托管 MCP 记 0);条目 subdir 适配合集仓库(skills/ 等子目录扫描根);
@@ -120,7 +128,7 @@ src/
                          #   git 缺失与零 agent 检测只算 warn,ok = 无 error 级;CLI doctor / /api/doctor /
                          #   TUI d 键 / GUI 设置弹窗共用
   adapters/
-    types.ts             # AgentAdapter 接口(id/displayName/detect/projectSkillsDir/userSkillsDir/capabilities/mcp?/validate?);
+    types.ts             # AgentAdapter 接口(id/displayName/detect/projectSkillsDir/userSkillsDir/capabilities/mcp?);
                          #   userSkillsDir() 是全局共享 apply 的目标(用户级 skills 目录);
                          #   McpSupport = MCP 配置目标(format json|codex-toml + configPath + toServerConfig)
     factory.ts           # makeAdapter(spec):detect 依据 ~/<homeDir> 是否存在(可用 spec.detect 覆盖;
@@ -134,6 +142,10 @@ src/
                          # 无 MCP 支持的五家(apply MCP 时跳过并告警);copilot/opencode 项目级同指 .agents/skills
     index.ts             # adapters 注册表(10 个)+ getAdapter(id)
   server.ts              # Express 应用:createApp(),REST API + 托管 public/;统一错误格式 { "error": "..." };
+                         #   回环防护中间件:Host 必须指向 127.0.0.1/localhost(防 DNS rebinding),
+                         #   带跨站 Origin 的请求一律 403(防恶意网页 simple request 跨域打写端点);
+                         #   写请求(非 GET/HEAD/OPTIONS)进程内串行化(core 读-改-写无锁,防 GUI 连点互相覆盖);
+                         #   express.json limit 50mb(profile bundle 内嵌 base64,默认 100KB 会把导入 413 掉);
                          #   resolvePublicDir 从自身位置逐级上探(≤4 级)找 public/index.html,覆盖 dist/打包/单文件三布局;
                          #   GET /api/meta 暴露服务进程 cwd;POST /api/projects 的 path 缺省取 cwd;
                          #   /api/mcps CRUD + /api/projects/:id/mcps 绑定(校验名字在注册表存在);
@@ -179,7 +191,8 @@ public/                  # 原生单页应用(index.html / app.js / style.css),�
                          #   index.html head 内联脚本在首屏前恢复主题;
                          #   新建项目弹窗含「开发需求」AI 推荐区(勾选绑定);设置弹窗含 AI 配置(预设/baseUrl/模型/Key + 测连);
                          #   MCP 服务页每个 server 带「设置」按钮,弹窗编辑配置(名称锁定,POST /api/mcps 同名 upsert 保存)
-scripts/                 # make-icon.mjs(生成图标)、build-cli.mjs(esbuild 打 CLI 单文件,注入 createRequire + __SSW_VERSION__)
+scripts/                 # make-icon.mjs(生成图标)、build-cli.mjs(esbuild 打 CLI 单文件,注入 createRequire + __SSW_VERSION__)、
+                         #   release.mjs(npm run release:干净工作区检查 → 全量测试 → 打 tag → push main+tag)
 tests/                   # vitest,每文件对应一个 core 模块 + platform(Windows 专项)+ server(API)+ cli(端到端)
 electron-builder.yml     # 打包配置:Linux AppImage + Windows NSIS(中文安装界面)+ macOS dmg/zip → release/,
                          #   只带 dist/ electron/ public/ package.json;图标 build/icon.png + build/icon.ico
@@ -206,17 +219,19 @@ electron-builder.yml     # 打包配置:Linux AppImage + Windows NSIS(中文安�
 - 测试文件在 `tests/*.test.ts`,每个 core 模块一个对应文件,外加:`platform.test.ts`(Windows 专项:symlink EPERM 降级 copy、git 不在 PATH 的可读报错、Windows 保留名拒绝)、`server.test.ts`(起真实 HTTP 服务验证校验逻辑与 CLI 对齐)、`cli.test.ts`(端到端,用 `child_process` 跑**编译产物** `dist/cli.js`,`beforeAll` 里先自动跑 `npm run build`;Windows 上改用 `npm.cmd` 且必须带 `shell: true`——Node ≥18.20/20.12 起无 shell 直接 spawn `.cmd` 会抛 EINVAL,只换名字绕不过)。
 - **隔离约定(必须遵守)**:测试在 `beforeEach` 里把 `process.env.SSW_HOME` 指向 `fs.mkdtemp` 临时目录,`afterEach` 里删除该环境变量并 `rm` 临时目录——绝不触碰真实 `~/.skills-switch`。涉及真实文件系统的测试保持串行(这也是 `pool: 'forks'` 的原因)。`global.test.ts` 额外用 `vi.spyOn(os, 'homedir')` 指到临时目录,绝不触碰真实 home。
 - 网络相关测试注入假 `fetch`(`recommendForProject(path, name, fetchImpl)` 的第三参、`aiRecommendSkills({ ..., fetchImpl })` 与 `testAiConnection(overrides, fetchImpl)`),不打真实 GitHub/模型 API。
-- 提交改动前跑 `npm test`,当前基线:**18 个文件 188 个用例全绿**。push/PR 由 `.github/workflows/ci.yml` 跑三平台 × Node 18/20/22。
+- 提交改动前跑 `npm test`,当前基线:**18 个文件 196 个用例全绿**。push/PR 由 `.github/workflows/ci.yml` 跑三平台 × Node 18/20/22。
 
 ## 安全注意事项
 
 - 本工具的核心动作是**写用户机器上其它工具的配置目录**(`.claude/skills` 等):任何 apply(项目级与全局共享)必须先快照、可回滚;同名冲突不许直接覆盖,先移入快照。
-- `unapply` 只删除"确定是我们创建的"内容:symlink 需指向库内;copy 目录需与库内 `SKILL.md` 内容一致;MCP 只摘项目当前绑定的 server 名,用户在同文件里的其它条目一律保留。
+- `unapply` 只删除"确定是我们创建的"内容:symlink 需指向库内;copy 目录需带归属标记 `.ssw-copy`(旧版无标记副本则要求与库内 `SKILL.md` 一致且无库外多余文件);MCP 只摘项目当前绑定的 server 名,用户在同文件里的其它条目一律保留。
+- profile bundle 是**外部输入**:导入前全量预检条目 id/name(`assertSafeBundleEntry`),local 落盘目标断言在库目录内——恶意 bundle 的 `../../..` 不得穿越出库目录删写文件。
+- REST 服务仅监听 127.0.0.1 且**无认证**是既定设计,但必须有回环防护:Host 头非回环(防 DNS rebinding)或 Origin 跨站(防恶意网页 simple request)一律 403;数据文件落盘 0600(`ai.json`/`mcps.json` 含密钥)。
 - MCP apply 编辑的是用户可能手改过的配置文件(`.mcp.json`、`config.toml` 等):写前已有文件必进快照;JSON 损坏无法安全合并时原文件进快照、重写为仅含本项目条目并告警。
 - `skill add --github` 会执行 `git clone` 到库目录;`skill update` 会 `git pull --ff-only`。git 调用默认 120s 超时(`SSW_GIT_TIMEOUT_MS` 覆盖)且 `GIT_TERMINAL_PROMPT=0`(私有/不存在仓库直接报错而不是挂起等凭据)。URI 经 `normalizeGithubUri` 白名单式解析,只接受 `owner/repo` 或完整 GitHub URL;`--subdir` 只允许 `/` 分隔(显式拒绝 `\` 与 `:`),防 Windows 路径穿越导致库外目录被递归删除。
 - 桌面版 BrowserWindow 开 `contextIsolation: true`、`nodeIntegration: false`,服务仅监听 `127.0.0.1`。
 - Express 服务**无认证**:仅由桌面 App 进程内启动(`startServer(port, '127.0.0.1')`),不暴露网卡;若未来重新开放独立 Web 模式,需自行限制监听范围或套带认证的反向代理。
 - 不要把 `SSW_HOME` 指向的目录当作可信输入边界——它存放的就是本工具的全部状态,损坏时要容错而不是崩溃。
-- AI 配置的 apiKey **明文存于** `ai.json`(与各家 CLI 的凭据文件同级风险):服务仅监听 127.0.0.1,REST/日志/导出(profile bundle 不含 ai.json)都不得回传 key 原文,GET /api/ai/config 只回掩码。
+- AI 配置的 apiKey **明文存于** `ai.json`(落盘 0600 仅属主可读写,与各家 CLI 的凭据文件同级风险):服务仅监听 127.0.0.1,REST/日志/导出(profile bundle 不含 ai.json)都不得回传 key 原文,GET /api/ai/config 只回掩码。
 
 每次修改界面或增加功能，要同步增加所有release版本功能,并在确认正确后直接提交，核心产品是appimage和cli，不需要做web，不增添功能的提交覆盖原版本即可，功能新增提交再迭代小版本

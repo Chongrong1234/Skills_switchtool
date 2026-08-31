@@ -43,6 +43,20 @@ function ghEntry(repo: string, sub: string): SkillEntry {
   };
 }
 
+/** 手工构造 bundle 的骨架(安全预检/边界用例不用先 export) */
+function bareBundle(patch: Partial<ProfileBundle>): ProfileBundle {
+  return {
+    format: PROFILE_FORMAT,
+    exportedAt: new Date().toISOString(),
+    skills: [],
+    mcps: [],
+    projects: { projects: [], activeProjectId: null },
+    global: { skills: [], agents: [], applyMode: 'symlink' },
+    localFiles: {},
+    ...patch,
+  } as ProfileBundle;
+}
+
 describe('deriveSubdir', () => {
   it('全部 subPath 首段一致 → 该首段;含根级或首段不一 → undefined', () => {
     expect(deriveSubdir([ghEntry('o/r', 'skills/a'), ghEntry('o/r', 'skills/b'), ghEntry('o/r', 'skills')], 'o/r')).toBe('skills');
@@ -150,5 +164,71 @@ describe('profile 导出 → 导入回环', () => {
     const r = await importProfile(bundle, async () => []);
     expect(r.localRestored).toEqual([]);
     expect(r.warnings.some((w) => w.includes(local.id))).toBe(true);
+  });
+
+  it('项目全部幂等跳过时,activeProjectId 也落盘', async () => {
+    // 本机已有同名同路径项目但无激活;bundle 里同 key 项目带 activeProjectId
+    const p = await createProject({ name: 'demo', path: tmp, agents: [], applyMode: 'symlink' });
+    const bundle = bareBundle({
+      projects: { projects: [{ ...p, id: 'imported-id' }], activeProjectId: 'imported-id' },
+    });
+    const r = await importProfile(bundle, async () => []);
+    expect(r.projectsAdded).toBe(0);
+    expect(r.projectsSkipped).toBe(1);
+    expect((await listProjects()).activeProjectId).toBe(p.id);
+  });
+});
+
+describe('profile 导入安全预检(bundle 是外部输入)', () => {
+  it('local 条目恶意 id(local:../../x)整体跳过,库外目录不被删写', async () => {
+    // 恶意 id 的落盘路径会解析到 SSW_HOME 根下的 x/(library/local__../../x);预置内容验证未被 rm
+    const escapeTarget = path.join(process.env.SSW_HOME!, 'x');
+    await fs.mkdir(escapeTarget, { recursive: true });
+    await fs.writeFile(path.join(escapeTarget, 'keep.txt'), 'data', 'utf8');
+
+    const evil: SkillEntry = {
+      id: 'local:../../x',
+      name: 'x',
+      description: 'd',
+      source: { type: 'local', uri: '/somewhere' },
+      tags: [],
+      installedAt: new Date().toISOString(),
+    };
+    const bundle = bareBundle({
+      skills: [evil],
+      localFiles: { 'local:../../x': { 'SKILL.md': Buffer.from('---\nname: x\ndescription: d\n---\n').toString('base64') } },
+    });
+    const r = await importProfile(bundle, async () => []);
+    expect(r.localRestored).toEqual([]);
+    expect(await readRegistry()).toEqual([]);
+    expect(r.warnings.some((w) => w.includes('非法条目'))).toBe(true);
+    expect(await fs.readFile(path.join(escapeTarget, 'keep.txt'), 'utf8')).toBe('data');
+  });
+
+  it('github 条目恶意 subPath 跳过,installFn 不被调用;name 非法的条目同样跳过', async () => {
+    const evilSub: SkillEntry = {
+      id: 'o/r:../../x',
+      name: 'x',
+      description: 'd',
+      source: { type: 'github', uri: 'https://github.com/o/r' },
+      tags: [],
+      installedAt: new Date().toISOString(),
+    };
+    const evilName: SkillEntry = {
+      id: 'o/r2:skills/a',
+      name: '../evil',
+      description: 'd',
+      source: { type: 'github', uri: 'https://github.com/o/r2' },
+      tags: [],
+      installedAt: new Date().toISOString(),
+    };
+    let installCalls = 0;
+    const r = await importProfile(bareBundle({ skills: [evilSub, evilName] }), async () => {
+      installCalls++;
+      return [];
+    });
+    expect(installCalls).toBe(0);
+    expect(await readRegistry()).toEqual([]);
+    expect(r.warnings.filter((w) => w.includes('非法条目'))).toHaveLength(2);
   });
 });

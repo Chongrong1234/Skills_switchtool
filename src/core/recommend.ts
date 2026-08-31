@@ -122,7 +122,7 @@ export async function recommendForProject(
     const keywords = projectName
       .split(/[\s\-_/.]+/)
       .map((w) => w.trim())
-      .filter((w) => w.length >= 3);
+      .filter((w) => w.length >= 2);
 
     // 查询词:topic:agent-skills + 技术栈/关键词,最多拼 3 个避免过长
     const terms = [...stacks, ...keywords].slice(0, 3);

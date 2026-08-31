@@ -14,9 +14,9 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { readGlobal, updateGlobal, type GlobalProfile } from './global.js';
-import { installFromGithub, LibraryError, skillDirOf } from './library.js';
+import { assertValidSkillName, installFromGithub, LibraryError, skillDirOf } from './library.js';
 import { readMcps, upsertMcp } from './mcps.js';
-import { projectsFile } from './paths.js';
+import { libraryDir, projectsFile } from './paths.js';
 import { readProjects } from './projects.js';
 import { atomicWriteJson, readRegistry, upsertSkill } from './registry.js';
 import type { McpEntry, Project, ProjectsData, SkillEntry } from './types.js';
@@ -113,6 +113,31 @@ export function deriveSubdir(entries: SkillEntry[], repo: string): string | unde
 }
 
 /**
+ * 校验 bundle 条目的 id/name 是否安全。profile 是外部输入:
+ * id 会参与拼库内路径(skillDirOf,导入时先 rm 再写、uninstall 时递归 rm),
+ * name 会参与拼 agent 目录路径(apply)——恶意 bundle 的 "../.." 会穿越出库目录删写文件。
+ * 口径与 library.ts 的 assertValidSkillName / normalizeSubdir 一致。
+ */
+function assertSafeBundleEntry(s: SkillEntry): void {
+  assertValidSkillName(typeof s?.name === 'string' ? s.name : '');
+  const id = typeof s?.id === 'string' ? s.id : '';
+  if (id.startsWith('local:')) {
+    assertValidSkillName(id.slice('local:'.length));
+    return;
+  }
+  // github 条目:"owner/repo" 或 "owner/repo:subPath"
+  const [repoPart, subPath] = id.split(':');
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repoPart ?? '')) {
+    throw new LibraryError(`非法 skill id: ${id}`);
+  }
+  if (subPath !== undefined) {
+    if (/[\\:]/.test(subPath) || !subPath || subPath.split('/').some((p) => !p || p === '.' || p === '..')) {
+      throw new LibraryError(`非法 skill id(子目录越界): ${id}`);
+    }
+  }
+}
+
+/**
  * 导入 profile。installFn 可注入(测试避免真实 git clone,同 migrate/recommend 的注入约定)。
  */
 export async function importProfile(
@@ -129,10 +154,21 @@ export async function importProfile(
   };
   const existing = new Set((await readRegistry()).map((s) => s.id));
 
+  // ---- 安全预检:非法 id/name 的条目整体跳过(单个放过,skillDirOf 会穿越到库外删写) ----
+  const unsafe = new Set<unknown>();
+  for (const s of bundle.skills) {
+    try {
+      assertSafeBundleEntry(s);
+    } catch (err) {
+      unsafe.add(s);
+      result.warnings.push(`跳过非法条目 ${s?.id ?? '?'}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   // ---- github 来源:按仓库分组重克隆,再 upsert 原条目以保住项目绑定引用的 id ----
   const byRepo = new Map<string, SkillEntry[]>();
   for (const s of bundle.skills) {
-    if (s.source?.type !== 'github') continue;
+    if (unsafe.has(s) || s.source?.type !== 'github') continue;
     const repo = s.id.split(':')[0];
     const list = byRepo.get(repo) ?? [];
     list.push(s);
@@ -159,7 +195,7 @@ export async function importProfile(
 
   // ---- local 来源:文件落盘到库目录并登记;已在库中的跳过(幂等) ----
   for (const s of bundle.skills) {
-    if (s.source?.type !== 'local') continue;
+    if (unsafe.has(s) || s.source?.type !== 'local') continue;
     if (existing.has(s.id)) continue;
     const files = bundle.localFiles?.[s.id];
     if (!files) {
@@ -167,6 +203,13 @@ export async function importProfile(
       continue;
     }
     const dest = skillDirOf(s);
+    // 双保险:落盘目标必须在库目录内(id 已过预检,这里兜底防 skillDirOf 未来被改出洞)
+    const libRoot = path.resolve(libraryDir());
+    const absDest = path.resolve(dest);
+    if (absDest !== libRoot && !absDest.startsWith(libRoot + path.sep)) {
+      result.warnings.push(`落盘路径越出库目录,已跳过: ${s.id}`);
+      continue;
+    }
     await fs.rm(dest, { recursive: true, force: true });
     let bad = false;
     for (const [rel, b64] of Object.entries(files)) {
@@ -224,10 +267,13 @@ export async function importProfile(
       result.projectsAdded++;
       if (!(await fs.stat(proj.path).catch(() => null))?.isDirectory()) missingPath++;
     }
+    // activeProjectId 仅在本机空缺时采用;注意项目全部幂等跳过(projectsAdded=0)时也要落盘
+    let activeChanged = false;
     if (!cur.activeProjectId && typeof incoming.activeProjectId === 'string') {
       cur.activeProjectId = idMap.get(incoming.activeProjectId) ?? null;
+      activeChanged = cur.activeProjectId !== null;
     }
-    if (result.projectsAdded > 0) await atomicWriteJson(projectsFile(), cur);
+    if (result.projectsAdded > 0 || activeChanged) await atomicWriteJson(projectsFile(), cur);
     if (missingPath > 0) result.warnings.push(`${missingPath} 个导入项目的路径在本机不存在,请在项目设置里修正`);
   }
 

@@ -1,11 +1,12 @@
 /**
  * server API 测试:起真实 HTTP 服务(listen 随机端口)验证校验逻辑与 CLI 对齐。
  */
-import type { Server } from 'node:http';
+import http, { type Server } from 'node:http';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { PROFILE_FORMAT } from '../src/core/profile.js';
 import { createApp } from '../src/server.js';
 
 let tmp: string;
@@ -287,5 +288,51 @@ describe('server 校验(与 CLI 行为对齐)', () => {
     const plain = await api('GET', '/api/skills');
     expect(plain.status).toBe(200);
     expect(plain.data.map((s: { id: string }) => s.id)).toEqual([a.data.id, b.data.id]);
+  });
+});
+
+describe('回环防护(无认证服务的边界)', () => {
+  it('Host 非回环 → 403(防 DNS rebinding)', async () => {
+    // undici 禁改 Host 头,走原生 http
+    const status = await new Promise<number>((resolve, reject) => {
+      const url = new URL(base);
+      const req = http.request(
+        { hostname: url.hostname, port: url.port, path: '/api/projects', method: 'GET', headers: { Host: 'evil.example.com' } },
+        (res) => {
+          res.resume();
+          resolve(res.statusCode ?? 0);
+        },
+      );
+      req.on('error', reject);
+      req.end();
+    });
+    expect(status).toBe(403);
+  });
+
+  it('带跨站 Origin → 403;回环源(Electron 页面自身)放行;无 Origin(curl/CLI)放行', async () => {
+    const evil = await fetch(`${base}/api/projects`, { headers: { Origin: 'https://evil.example.com' } });
+    expect(evil.status).toBe(403);
+    const own = await fetch(`${base}/api/projects`, { headers: { Origin: base } });
+    expect(own.status).toBe(200);
+    const bare = await api('GET', '/api/projects');
+    expect(bare.status).toBe(200);
+  });
+});
+
+describe('profile 导入大 bundle(express.json 默认 100KB 曾把 GUI 导入 413 掉)', () => {
+  it('超过 100KB 的 bundle 可正常导入', async () => {
+    const big = Buffer.alloc(200 * 1024, 0x61).toString('base64'); // ≈267KB
+    const bundle = {
+      format: PROFILE_FORMAT,
+      exportedAt: new Date().toISOString(),
+      skills: [],
+      mcps: [],
+      projects: { projects: [], activeProjectId: null },
+      global: { skills: [], agents: [], applyMode: 'symlink' },
+      localFiles: { junk: { 'a.txt': big } }, // 无对应 skill 条目,内容不被触碰
+    };
+    const r = await api('POST', '/api/profile/import', { bundle });
+    expect(r.status).toBe(200);
+    expect(r.data.warnings).toEqual([]);
   });
 });

@@ -3,7 +3,7 @@
  * mcp 可选:声明该 agent 的项目级 MCP 配置文件位置与序列化方式,
  * 未声明的 agent 在 apply MCP 时跳过并告警。
  */
-import type { McpEntry, SkillEntry } from '../core/types.js';
+import type { McpEntry } from '../core/types.js';
 
 /** 项目级 MCP 配置目标:配置文件路径 + 格式 + 条目序列化 */
 export interface McpSupport {
@@ -21,5 +21,4 @@ export interface AgentAdapter {
   userSkillsDir(): string;       // 用户级(全局)skills 目录,全局共享 apply 的目标
   capabilities: { hooks: boolean; allowedTools: boolean };
   mcp?: McpSupport;
-  validate?(skill: SkillEntry): string[];          // 返回不兼容告警
 }

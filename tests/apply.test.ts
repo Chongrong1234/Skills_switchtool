@@ -78,6 +78,33 @@ describe('apply', () => {
     expect(st.isSymbolicLink()).toBe(false);
     expect(st.isDirectory()).toBe(true);
     expect(await fs.readFile(path.join(dest, 'SKILL.md'), 'utf8')).toContain('copy-skill');
+    // copy 物化带归属标记(unapply 的硬证据)
+    expect(await fs.readFile(path.join(dest, '.ssw-copy'), 'utf8')).toContain('skills-switchtool');
+  });
+
+  it('unapply 归属判定:带标记副本删;用户手工同名同内容目录(含自己追加的文件)不动;旧版无标记一致副本仍删', async () => {
+    const skill = await initSkill('guard-skill', '归属判定');
+    const project = await createProject({ name: 'demo', path: projectPath, agents: ['claude-code'], applyMode: 'copy' });
+    await setProjectSkills(project.id, [skill.id]);
+    await applyProject(project.id);
+    const dest = path.join(claudeCode.projectSkillsDir(projectPath), 'guard-skill');
+    // 我们物化的副本(带标记)→ unapply 删除
+    expect((await unapplyProject(project.id)).removed).toEqual([dest]);
+    expect(await fs.lstat(dest).catch(() => null)).toBeNull();
+
+    // 用户手工放置:同名 + SKILL.md 一致,但有自己的文件 → 不是我们的,不动
+    await fs.mkdir(dest, { recursive: true });
+    await fs.copyFile(path.join(skillDirOf(skill), 'SKILL.md'), path.join(dest, 'SKILL.md'));
+    await fs.writeFile(path.join(dest, 'user-notes.md'), '用户自己的文件', 'utf8');
+    expect((await unapplyProject(project.id)).removed).toEqual([]);
+    expect(await fs.readFile(path.join(dest, 'user-notes.md'), 'utf8')).toBe('用户自己的文件');
+
+    // 旧版本物化的副本(无标记、无多余文件、SKILL.md 一致)→ 仍认定是我们的,删除
+    await fs.rm(dest, { recursive: true, force: true });
+    await fs.mkdir(dest, { recursive: true });
+    await fs.copyFile(path.join(skillDirOf(skill), 'SKILL.md'), path.join(dest, 'SKILL.md'));
+    expect((await unapplyProject(project.id)).removed).toEqual([dest]);
+    expect(await fs.lstat(dest).catch(() => null)).toBeNull();
   });
 
   it('同名冲突时旧目录被移入快照,rollback 可还原', async () => {

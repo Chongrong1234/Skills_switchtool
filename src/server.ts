@@ -95,7 +95,41 @@ async function validateMcpNames(mcpNames: unknown): Promise<string | null> {
 
 export function createApp(): express.Express {
   const app = express();
-  app.use(express.json());
+
+  // 本机回环防护:服务无认证,恶意网页可用 simple request(不触发 preflight)跨域打
+  // 127.0.0.1 的写端点(apply/rollback 等)。Host 必须指向回环(防 DNS rebinding 读密钥);
+  // 带 Origin 的请求必是浏览器跨域,仅放行回环源。Electron 页面 loadURL 自 127.0.0.1,
+  // 同源请求不带 Origin 或 Origin 即回环源,不受影响;CLI/TUI 不走本服务。
+  app.use((req, res, next) => {
+    const host = req.headers.host ?? '';
+    if (!/^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i.test(host)) {
+      return void res.status(403).json({ error: '仅允许本机回环访问' });
+    }
+    const origin = req.headers.origin;
+    if (origin && !/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i.test(origin)) {
+      return void res.status(403).json({ error: '拒绝跨站来源的请求' });
+    }
+    next();
+  });
+
+  // 写请求进程内串行化:core 持久化是"读-改-写"JSON 且无锁,
+  // GUI 连点/并发写会互相覆盖丢条目。GET 不排队,进度轮询等读接口不受影响。
+  let writeQueue: Promise<unknown> = Promise.resolve();
+  app.use((req, res, next) => {
+    if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
+    writeQueue = writeQueue.then(
+      () =>
+        new Promise<void>((resolve) => {
+          res.once('finish', resolve);
+          res.once('close', resolve); // 客户端中途断连的兜底(finish 之后 resolve 是幂等的)
+          next();
+        }),
+    );
+  });
+
+  // profile bundle 内嵌 local 技能 base64(单 skill 允许到 20MB),
+  // express.json 默认 100KB 上限会把稍大的配置库导入直接 413 掉
+  app.use(express.json({ limit: '50mb' }));
 
   // ---- agents ----
   app.get('/api/agents', (_req, res) => {

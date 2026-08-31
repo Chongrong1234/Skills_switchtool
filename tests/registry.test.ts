@@ -75,6 +75,13 @@ describe('registry', () => {
     expect(await readRegistry()).toEqual([]);
   });
 
+  // Windows 上 chmod 不映射 NTFS ACL,该断言只在 POSIX 平台成立
+  it.skipIf(process.platform === 'win32')('落盘文件权限收窄为 0600(ai.json/mcps.json 含密钥)', async () => {
+    await writeRegistry([makeEntry('local:a')]);
+    const st = await fs.stat(registryFile());
+    expect(st.mode & 0o777).toBe(0o600);
+  });
+
   it('结构非法(非对象)也容错', async () => {
     await fs.mkdir(tmp, { recursive: true });
     await fs.writeFile(registryFile(), '[1,2,3]', 'utf8');

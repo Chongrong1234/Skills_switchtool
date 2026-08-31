@@ -13,6 +13,8 @@ linux:
   target: AppImage
   category: Utility
   icon: build/icon.png
+  # 与 package.json 的 desktopName 配合:窗口 WM_CLASS 关联 .desktop 启动器
+  syncDesktopName: true
 win:
   target: nsis
   icon: build/icon.ico
