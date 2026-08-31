@@ -439,13 +439,16 @@ leaf(mcpCmd.command('remove').description('从库中删除 MCP server(同时解�
 // ---------- skill ----------
 const skillCmd = program.command('skill').description('中央库 skills 管理');
 
-leaf(skillCmd.command('list').description('列出库中全部 skills')).action(
+leaf(skillCmd.command('list').description('列出库中全部 skills(带 ★stars 与使用次数热度)')).action(
   wrap(async (cmd) => {
     const skills = await listSkills();
     out(cmd, skills, () => {
       if (!skills.length) return '(库为空,用 ssw skill add/init 添加)';
       return skills
-        .map((s) => `${s.id.padEnd(28)} ${s.name.padEnd(16)} [${s.source.type}]  ${s.description}`)
+        .map((s) => {
+          const hot = `${s.stars ? ` ★${s.stars}` : ''}${s.useCount ? ` 用${s.useCount}次` : ''}`;
+          return `${s.id.padEnd(28)} ${s.name.padEnd(16)} [${s.source.type}]${hot}  ${s.description}`;
+        })
         .join('\n');
     });
   }),
@@ -895,7 +898,8 @@ leaf(
       const lines: string[] = [];
       if (r.message) lines.push(`(${r.message})`);
       for (const item of r.items) {
-        lines.push(`✓ ${item.id}  ${item.name}`);
+        const hot = `${item.stars ? ` ★${item.stars}` : ''}${item.useCount ? ` 用${item.useCount}次` : ''}`;
+        lines.push(`✓ ${item.id}  ${item.name}${hot}`);
         if (item.reason) lines.push(`    推荐理由: ${item.reason}`);
       }
       if (bound.length) lines.push(`已并入项目技能集(现共 ${bound.length} 个);apply 生效: ssw project apply ${opts.bind}`);

@@ -124,7 +124,8 @@ export async function startTui(): Promise<void> {
         lines.push('(库为空,先用 ssw skill add/init 添加)');
       }
       for (const s of state.skills.slice(0, rows - 8)) {
-        lines.push(`  ${s.id.padEnd(28)} ${cut(s.name, 16).padEnd(16)} [${s.source.type}]  ${cut(s.description, 24)}`);
+        const hot = `${s.stars ? ` ★${s.stars}` : ''}${s.useCount ? ` 用${s.useCount}` : ''}`;
+        lines.push(`  ${s.id.padEnd(28)} ${cut(s.name, 16).padEnd(16)} [${s.source.type}]${hot}  ${cut(s.description, 24)}`);
       }
       lines.push('');
       lines.push(`${DIM}Esc 返回项目视图  q 退出${RESET}`);

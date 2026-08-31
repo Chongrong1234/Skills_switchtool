@@ -197,6 +197,8 @@ export interface AiRecommendedSkill {
   name: string;
   description: string;
   reason: string; // 模型给出的一句推荐理由
+  stars?: number;    // 仓库 star 数(热度展示)
+  useCount?: number; // 用户历史使用次数(热度展示)
 }
 
 export interface AiRecommendResult {
@@ -227,15 +229,23 @@ export async function aiRecommendSkills(
       return { items: [], message: '技能库为空:先添加一些 skill,AI 才有可推荐的内容' };
     }
 
-    // 只喂 id/name/description/tags,控制 token;库再大也在常见上下文内
-    const catalog = skills.map((s) => ({ id: s.id, name: s.name, description: s.description, tags: s.tags }));
+    // 只喂必要字段控制 token;stars/uses 作为相关度相近时的 tie-break(更常用更可靠)
+    const catalog = skills.map((s) => ({
+      id: s.id,
+      name: s.name,
+      description: s.description,
+      tags: s.tags,
+      stars: s.stars ?? 0,
+      uses: s.useCount ?? 0,
+    }));
     const messages: ChatMessage[] = [
       {
         role: 'system',
         content:
           '你是 Agent Skills 推荐助手。根据用户的开发需求,从给定的技能库 JSON 中挑选最有帮助的技能。' +
           `只输出 JSON:{"recommendations":[{"id":"<技能id>","reason":"<一句中文理由>"}]},不要输出任何其他内容。` +
-          `id 必须原样取自技能库,最多 ${MAX_AI_RECOMMENDATIONS} 个,按相关度降序;没有合适的就返回 {"recommendations":[]}。`,
+          `id 必须原样取自技能库,最多 ${MAX_AI_RECOMMENDATIONS} 个,按相关度降序;没有合适的就返回 {"recommendations":[]}。` +
+          '相关度相近时,优先 stars(社区热度)与 uses(用户历史使用次数)更高的技能。',
       },
       {
         role: 'user',
@@ -255,7 +265,7 @@ export async function aiRecommendSkills(
       const entry = byId.get(p.id);
       if (!entry || seen.has(p.id)) continue; // 幻觉 id / 重复 id 丢弃
       seen.add(p.id);
-      items.push({ id: entry.id, name: entry.name, description: entry.description, reason: p.reason });
+      items.push({ id: entry.id, name: entry.name, description: entry.description, reason: p.reason, stars: entry.stars, useCount: entry.useCount });
       if (items.length >= MAX_AI_RECOMMENDATIONS) break;
     }
     return {

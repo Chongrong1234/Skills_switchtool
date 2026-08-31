@@ -11,6 +11,9 @@ export interface SkillEntry {
   ref?: string;          // git commit/tag,用于更新跟踪
   tags: string[];        // 推荐匹配用
   installedAt: string;   // ISO 时间
+  stars?: number;        // github 来源仓库的 star 数(安装/更新时采集,软失败缺失)
+  useCount?: number;     // 被绑定进项目/全局共享的累计次数(热度排序信号)
+  lastUsedAt?: string;   // 最近一次被绑定的 ISO 时间
 }
 
 /** projects.json 中的项目档案 */

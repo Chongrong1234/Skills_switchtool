@@ -84,3 +84,23 @@ export async function removeSkill(id: string): Promise<boolean> {
   await writeRegistry(next);
   return true;
 }
+
+/**
+ * 热度统计:把一批 skill 的 useCount +1 并刷新 lastUsedAt(绑定进项目/全局共享时调用)。
+ * 只增不减——它表达的是"历史上多常用",解绑不该抹掉热度。
+ */
+export async function markSkillsUsed(ids: string[]): Promise<void> {
+  if (!ids.length) return;
+  const wanted = new Set(ids);
+  const skills = await readRegistry();
+  const now = new Date().toISOString();
+  let dirty = false;
+  for (const s of skills) {
+    if (wanted.has(s.id)) {
+      s.useCount = (s.useCount ?? 0) + 1;
+      s.lastUsedAt = now;
+      dirty = true;
+    }
+  }
+  if (dirty) await writeRegistry(skills);
+}

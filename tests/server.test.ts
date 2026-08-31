@@ -247,4 +247,28 @@ describe('server 校验(与 CLI 行为对齐)', () => {
     // test 端点不配置代理 fetch 会真实发请求——只断言它对缺 key 的短路
     // (真实网络路径由 tests/ai.test.ts 的注入 fetch 覆盖)
   });
+
+  it('GET /api/skills?rank=1:热度排序(常用优先);forProject 带项目上下文;坏项目 404', async () => {
+    // 造两个 skill:一个"绑定过",一个全新的
+    const a = await api('POST', '/api/skills/init', { name: 'used-one', description: 'node 工具' });
+    const b = await api('POST', '/api/skills/init', { name: 'fresh-one', description: '新技能' });
+    expect(a.status).toBe(201);
+    expect(b.status).toBe(201);
+    const c = await api('POST', '/api/projects', { name: 'rank-proj', path: '/tmp/x', agents: [] });
+    await api('POST', `/api/projects/${c.data.id}/skills`, { skillIds: [a.data.id] }); // 计一次使用
+    await api('POST', `/api/projects/${c.data.id}/skills`, { skillIds: [] });          // 解绑不扣热度
+
+    const ranked = await api('GET', '/api/skills?rank=1');
+    expect(ranked.status).toBe(200);
+    expect(ranked.data[0].id).toBe(a.data.id); // 用过的排最前
+    expect(ranked.data[0].useCount).toBe(1);
+
+    const withCtx = await api('GET', `/api/skills?rank=1&forProject=${c.data.id}`);
+    expect(withCtx.status).toBe(200);
+    expect((await api('GET', '/api/skills?rank=1&forProject=ghost')).status).toBe(404);
+    // 默认不带 rank 仍是注册表原顺序(向后兼容)
+    const plain = await api('GET', '/api/skills');
+    expect(plain.status).toBe(200);
+    expect(plain.data.map((s: { id: string }) => s.id)).toEqual([a.data.id, b.data.id]);
+  });
 });

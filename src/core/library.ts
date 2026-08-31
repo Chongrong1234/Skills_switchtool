@@ -317,8 +317,31 @@ function normalizeSubdir(subdir?: string): string | undefined {
 }
 
 /**
+ * 采集仓库 star 数(GitHub API,未登录限流 60 次/小时足够安装场景)。
+ * 软失败:断网/限流/非 GitHub 都返回 undefined,绝不影响安装主流程。
+ */
+export async function fetchRepoStars(
+  owner: string,
+  repo: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<number | undefined> {
+  try {
+    const res = await fetchImpl(`https://api.github.com/repos/${owner}/${repo}`, {
+      headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'skills-switchtool' },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) return undefined;
+    const data = (await res.json()) as { stargazers_count?: unknown };
+    return typeof data.stargazers_count === 'number' ? data.stargazers_count : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * 扫描 repoDir(或其中 subdir 子目录)的自身 + 第一层子目录,把合法 skill 登记入库。
  * subPath 是相对仓库根的路径,写进 SkillEntry.id 的 "owner/repo:<subPath>"。
+ * meta.stars 可选:仓库 star 数,登记时一并记入条目(热度排序信号)。
  * 独立导出便于测试(installFromGithub 的 git clone 要网络,这部分不需要)。
  */
 export async function registerSkillsIn(
@@ -326,6 +349,7 @@ export async function registerSkillsIn(
   repoId: string, // "owner/repo"
   uri: string,
   subdir?: string,
+  meta?: { stars?: number },
 ): Promise<SkillEntry[]> {
   const scanRoot = subdir ? path.join(repoDir, subdir) : repoDir;
   const stat = await fs.stat(scanRoot).catch(() => null);
@@ -341,9 +365,12 @@ export async function registerSkillsIn(
   }
 
   const installed: SkillEntry[] = [];
+  // 重安装同一仓库会 upsert 覆盖条目:先读一次注册表,保留各条目的使用统计(stars 以本次采集为准)
+  const prevById = new Map((await readRegistry()).map((s) => [s.id, s]));
   for (const c of candidates) {
     try {
       const { name, description } = await validateSkillDir(c.dir);
+      const prev = prevById.get(`${repoId}:${c.subPath}`);
       const entry: SkillEntry = {
         id: `${repoId}:${c.subPath}`,
         name,
@@ -351,6 +378,9 @@ export async function registerSkillsIn(
         source: { type: 'github', uri },
         tags: [],
         installedAt: new Date().toISOString(),
+        ...(meta?.stars !== undefined ? { stars: meta.stars } : prev?.stars !== undefined ? { stars: prev.stars } : {}),
+        ...(prev?.useCount !== undefined ? { useCount: prev.useCount } : {}),
+        ...(prev?.lastUsedAt !== undefined ? { lastUsedAt: prev.lastUsedAt } : {}),
       };
       await upsertSkill(entry);
       installed.push(entry);
@@ -364,8 +394,9 @@ export async function registerSkillsIn(
 /**
  * 从 GitHub 安装:浅克隆后,根或第一层子目录中含 SKILL.md 的都登记入库。
  * subdir 可选:指定后以 <仓库>/<subdir> 为扫描根(主流合集仓库把 skills 放在 skills/ 子目录)。
+ * 顺带采集仓库 star 数入条目(软失败不阻塞安装);fetchImpl 可注入(测试)。
  */
-export async function installFromGithub(uri: string, subdir?: string): Promise<SkillEntry[]> {
+export async function installFromGithub(uri: string, subdir?: string, fetchImpl: typeof fetch = fetch): Promise<SkillEntry[]> {
   const { owner, repo, cloneUrl } = normalizeGithubUri(uri);
   const sub = normalizeSubdir(subdir);
   const dest = path.join(libraryDir(), `github__${owner}__${repo}`);
@@ -382,7 +413,9 @@ export async function installFromGithub(uri: string, subdir?: string): Promise<S
     throw new LibraryError(`git clone 失败: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  const installed = await registerSkillsIn(dest, `${owner}/${repo}`, uri, sub);
+  const installed = await registerSkillsIn(dest, `${owner}/${repo}`, uri, sub, {
+    stars: await fetchRepoStars(owner, repo, fetchImpl),
+  });
   if (installed.length === 0) {
     await fs.rm(dest, { recursive: true, force: true });
     throw new LibraryError(`仓库中未找到合法 skill(无 SKILL.md): ${uri}${sub ? `(子目录 ${sub})` : ''}`);
@@ -415,6 +448,8 @@ export async function installFromLocal(dir: string): Promise<SkillEntry> {
   await fs.rm(dest, { recursive: true, force: true });
   await fs.mkdir(libraryDir(), { recursive: true });
   await fs.cp(abs, dest, { recursive: true });
+  // 重装同名 local skill 会 upsert 覆盖条目:保留使用统计
+  const prev = await getSkill(id);
   const entry: SkillEntry = {
     id,
     name,
@@ -422,6 +457,9 @@ export async function installFromLocal(dir: string): Promise<SkillEntry> {
     source: { type: 'local', uri: abs },
     tags: [],
     installedAt: new Date().toISOString(),
+    ...(prev?.stars !== undefined ? { stars: prev.stars } : {}),
+    ...(prev?.useCount !== undefined ? { useCount: prev.useCount } : {}),
+    ...(prev?.lastUsedAt !== undefined ? { lastUsedAt: prev.lastUsedAt } : {}),
   };
   await upsertSkill(entry);
   return entry;
@@ -480,7 +518,9 @@ export async function updateSkill(id: string): Promise<SkillEntry> {
     const repoDir = path.join(libraryDir(), `github__${owner}__${repo}`);
     await runGit(['-C', repoDir, 'pull', '--progress', '--ff-only'], `更新 ${owner}/${repo}`);
     const { name, description } = await validateSkillDir(skillDirOf(entry));
-    const next = { ...entry, name, description };
+    // 顺带刷新 stars(软失败保留旧值);useCount 等统计随 ...entry 原样保留
+    const stars = await fetchRepoStars(owner, repo);
+    const next = { ...entry, name, description, ...(stars !== undefined ? { stars } : {}) };
     await upsertSkill(next);
     return next;
   }
@@ -535,6 +575,8 @@ ${description}
 在这里编写该 skill 的具体指令内容。`}
 `;
   await fs.writeFile(path.join(dest, 'SKILL.md'), skillMd, 'utf8');
+  // 同名重建会 upsert 覆盖条目:保留使用统计
+  const prev = await getSkill(id);
   const entry: SkillEntry = {
     id,
     name,
@@ -542,6 +584,9 @@ ${description}
     source: { type: 'local', uri: dest },
     tags: ['custom'],
     installedAt: new Date().toISOString(),
+    ...(prev?.stars !== undefined ? { stars: prev.stars } : {}),
+    ...(prev?.useCount !== undefined ? { useCount: prev.useCount } : {}),
+    ...(prev?.lastUsedAt !== undefined ? { lastUsedAt: prev.lastUsedAt } : {}),
   };
   await upsertSkill(entry);
   return entry;

@@ -62,6 +62,7 @@ ssw project switch api-server    # 激活项目 → 该项目的技能组合自�
 | 🤝 **收养既有 skills** | `ssw skill adopt` 把各 agent 目录里已存在的 skills 一键收进中央库,先纳管再统一分发 |
 | 🔍 **智能推荐 + 内置推荐库** | 识别项目技术栈推荐 GitHub 高 star skills;另内置 99 个精选 skill 仓库 + 25 个常用 MCP server / 13 大类(分类带条目统计),离线可浏览,一键安装;断网安静降级 |
 | 🤖 **AI 技能推荐** | 新建项目时填一句开发需求,AI 读本地技能库给出初步推荐供勾选绑定;模型/baseUrl/API Key 在设置里配,官方端点或 OpenAI 兼容中转站均可(预设 Kimi/DeepSeek/OpenAI/OpenRouter);未配置或断网安静降级 |
+| 🔥 **热度排序选配** | 给项目/全局共享选技能时,常用的排前面:记录每个 skill 的使用次数(绑定即计、只增不减)、GitHub 仓库 stars(安装/更新时采集),再结合项目技术栈与名称关键词匹配加权排序;AI 推荐也把 stars/用量作为相关度相近时的优先依据 |
 | 🖥️ **两种打开方式** | Electron 桌面 App 点点点、纯 CLI/终端面板——同一份核心,同一份状态 |
 | 🪶 **极致轻量** | 运行时仅 2 个依赖(express + commander);CLI 可打成零依赖单文件,拷到服务器即用 |
 
@@ -134,7 +135,7 @@ ssw mcp list
 ssw mcp add --name X --command npx [--args -y,pkg] [--env K=V,...]   # stdio 本地服务
 ssw mcp add --name X --url https://... [--transport sse] [--header K=V,...]  # 远端服务
 ssw mcp remove <name>                        # 删 server 并解除各项目绑定
-ssw skill list
+ssw skill list                          # 带 ★stars 与使用次数热度标记
 ssw skill add --github <owner/repo 或 URL> [--subdir skills]   # 合集仓库用 --subdir 指定扫描根
 ssw skill add --local /path/to/skill
 ssw skill init --name X --desc "..."    # 自建 skill 脚手架

@@ -453,32 +453,43 @@ function openSettingsModal() {
   runDoctorCheck();
 }
 
-// ---------- 从库中添加技能 ----------
+/** 热度徽标:stars(社区热度)+ 使用次数(本机历史) */
+function hotTags(s) {
+  return `${s.stars ? `<span class="tag">★ ${s.stars}</span>` : ''}${s.useCount ? `<span class="tag">用 ${s.useCount} 次</span>` : ''}`;
+}
+
+// ---------- 从库中添加技能(热度排序:常用 > 贴合本项目 > 高星) ----------
 function openAddSkillModal(project) {
-  const available = state.skills.filter((s) => !project.skills.includes(s.id));
   const modal = openModal(`
     <h2>从库中添加技能 → ${esc(project.name)}</h2>
-    ${available.length ? `<div class="rec-list">
+    <div id="ask-body"><div class="spinner"></div><div class="loading-text">按热度排序中…</div></div>
+    <div class="modal-actions"><button class="btn" id="m-close">关闭</button></div>
+  `);
+  modal.querySelector('#m-close').addEventListener('click', closeModal);
+  run(async () => {
+    // 服务端按热度排好序(带本项目的技术栈/名词上下文);不走 state.skills 缓存,保证 stars/用量新鲜
+    const ranked = await api('GET', `/api/skills?rank=1&forProject=${encodeURIComponent(project.id)}`);
+    const available = ranked.filter((s) => !project.skills.includes(s.id));
+    const body = modal.querySelector('#ask-body');
+    body.innerHTML = available.length ? `<div class="rec-list">
       ${available.map((s) => `
         <div class="rec-item">
           <div class="rhead">
-            <span class="rname">${esc(s.name)}</span>
+            <span class="rname">${esc(s.name)} ${hotTags(s)}</span>
             <button class="btn btn-sm btn-primary" data-add="${esc(s.id)}">添加</button>
           </div>
           <div class="rdesc">${esc(s.description)}</div>
         </div>`).join('')}
-    </div>` : '<div class="empty">库中没有更多可添加的技能</div>'}
-    <div class="modal-actions"><button class="btn" id="m-close">关闭</button></div>
-  `);
-  modal.querySelector('#m-close').addEventListener('click', closeModal);
-  modal.querySelectorAll('[data-add]').forEach((btn) =>
-    btn.addEventListener('click', () => run(async () => {
-      await api('POST', `/api/projects/${project.id}/skills`, { skillIds: [...project.skills, btn.dataset.add] });
-      await loadAll();
-      closeModal();
-      render();
-      toast('已添加到项目技能集');
-    })));
+    </div>` : '<div class="empty">库中没有更多可添加的技能</div>';
+    body.querySelectorAll('[data-add]').forEach((btn) =>
+      btn.addEventListener('click', () => run(async () => {
+        await api('POST', `/api/projects/${project.id}/skills`, { skillIds: [...project.skills, btn.dataset.add] });
+        await loadAll();
+        closeModal();
+        render();
+        toast('已添加到项目技能集');
+      })));
+  });
 }
 
 // ---------- 从库中添加 MCP ----------
@@ -531,7 +542,7 @@ async function loadAiRecommend(modal, project, requirement) {
       ${rec.items.map((r) => `
         <div class="rec-item">
           <div class="rhead">
-            <label class="ai-pick"><input type="checkbox" data-ai-id="${esc(r.id)}" checked /> <span class="rname">${esc(r.name)}</span></label>
+            <label class="ai-pick"><input type="checkbox" data-ai-id="${esc(r.id)}" checked /> <span class="rname">${esc(r.name)}</span> ${hotTags(r)}</label>
           </div>
           <div class="rdesc">${esc(r.description)}</div>
           ${r.reason ? `<div class="rreason">${esc(r.reason)}</div>` : ''}
@@ -1213,33 +1224,38 @@ function renderGlobal() {
   }));
 }
 
-/** 从库中添加技能到全局共享集 */
+/** 从库中添加技能到全局共享集(热度排序:常用 > 高星;全局无项目上下文) */
 function openAddGlobalSkillModal() {
   const g = state.global || { skills: [] };
-  const available = state.skills.filter((s) => !g.skills.includes(s.id));
   const modal = openModal(`
     <h2>从库中添加技能 → 全局共享</h2>
-    ${available.length ? `<div class="rec-list">
+    <div id="ask-body"><div class="spinner"></div><div class="loading-text">按热度排序中…</div></div>
+    <div class="modal-actions"><button class="btn" id="m-close">关闭</button></div>
+  `);
+  modal.querySelector('#m-close').addEventListener('click', closeModal);
+  run(async () => {
+    const ranked = await api('GET', '/api/skills?rank=1');
+    const available = ranked.filter((s) => !g.skills.includes(s.id));
+    const body = modal.querySelector('#ask-body');
+    body.innerHTML = available.length ? `<div class="rec-list">
       ${available.map((s) => `
         <div class="rec-item">
           <div class="rhead">
-            <span class="rname">${esc(s.name)}</span>
+            <span class="rname">${esc(s.name)} ${hotTags(s)}</span>
             <button class="btn btn-sm btn-primary" data-add="${esc(s.id)}">添加</button>
           </div>
           <div class="rdesc">${esc(s.description)}</div>
         </div>`).join('')}
-    </div>` : '<div class="empty">库中没有更多可添加的技能</div>'}
-    <div class="modal-actions"><button class="btn" id="m-close">关闭</button></div>
-  `);
-  modal.querySelector('#m-close').addEventListener('click', closeModal);
-  modal.querySelectorAll('[data-add]').forEach((btn) =>
-    btn.addEventListener('click', () => run(async () => {
-      await api('PUT', '/api/global', { skills: [...g.skills, btn.dataset.add] });
-      await loadAll();
-      closeModal();
-      render();
-      toast('已添加到全局技能集');
-    })));
+    </div>` : '<div class="empty">库中没有更多可添加的技能</div>';
+    body.querySelectorAll('[data-add]').forEach((btn) =>
+      btn.addEventListener('click', () => run(async () => {
+        await api('PUT', '/api/global', { skills: [...g.skills, btn.dataset.add] });
+        await loadAll();
+        closeModal();
+        render();
+        toast('已添加到全局技能集');
+      })));
+  });
 }
 
 // ---------- 收养 agent 技能(逆向于 apply:agent 目录 → 中央库) ----------

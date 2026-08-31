@@ -3,7 +3,7 @@
  */
 import crypto from 'node:crypto';
 import { projectsFile } from './paths.js';
-import { atomicWriteJson, readJsonSafe } from './registry.js';
+import { atomicWriteJson, markSkillsUsed, readJsonSafe } from './registry.js';
 import type { Project, ProjectsData } from './types.js';
 
 // 注意:不能复用模块级空对象常量——调用方会原地修改返回值的数组,
@@ -60,6 +60,12 @@ export async function updateProject(
   const data = await readProjects();
   const p = data.projects.find((x) => x.id === id);
   if (!p) return undefined;
+  // 热度统计:技能集里新出现的 id 记一次使用(只增不减;与旧集取差集,重存不重复计)
+  if (patch.skills !== undefined) {
+    const before = new Set(p.skills);
+    const added = patch.skills.filter((s) => !before.has(s));
+    if (added.length) await markSkillsUsed(added);
+  }
   Object.assign(p, patch);
   await writeProjects(data);
   return p;

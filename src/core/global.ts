@@ -17,7 +17,7 @@ import {
   type ApplyResult,
 } from './apply.js';
 import { globalFile } from './paths.js';
-import { atomicWriteJson, readJsonSafe, readRegistry } from './registry.js';
+import { atomicWriteJson, markSkillsUsed, readJsonSafe, readRegistry } from './registry.js';
 import { createSnapshot, finalizeSnapshot, rollback } from './snapshot.js';
 import type { ApplyMode } from './types.js';
 
@@ -45,7 +45,14 @@ export async function readGlobal(): Promise<GlobalProfile> {
 export async function updateGlobal(
   patch: Partial<Pick<GlobalProfile, 'skills' | 'agents' | 'applyMode'>>,
 ): Promise<GlobalProfile> {
-  const next = { ...(await readGlobal()), ...patch };
+  const cur = await readGlobal();
+  // 热度统计:全局技能集里新出现的 id 记一次使用(同 updateProject 的差集口径)
+  if (patch.skills !== undefined) {
+    const before = new Set(cur.skills);
+    const added = patch.skills.filter((s) => !before.has(s));
+    if (added.length) await markSkillsUsed(added);
+  }
+  const next = { ...cur, ...patch };
   await atomicWriteJson(globalFile(), next);
   return next;
 }

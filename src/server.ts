@@ -34,6 +34,7 @@ import { listCatalogCategories, listCatalogWithInstalled } from './core/catalog.
 import { exportSkillsCode, importSkillsCode, parseSkillsCode } from './core/migrate.js';
 import { listMcps, McpError, removeMcp, upsertMcp } from './core/mcps.js';
 import { recommendForProject } from './core/recommend.js';
+import { EMPTY_CONTEXT, projectRankContext, rankSkills } from './core/rank.js';
 import {
   AiError,
   AI_PRESETS,
@@ -240,8 +241,18 @@ export function createApp(): express.Express {
   }));
 
   // ---- skills ----
-  app.get('/api/skills', h(async (_req, res) => {
-    res.json(await listSkills());
+  // ?rank=1 按热度排序(使用次数 > 项目分类匹配 > stars);&forProject=<id> 带该项目的技术栈/名词上下文
+  app.get('/api/skills', h(async (req, res) => {
+    const skills = await listSkills();
+    if (req.query.rank !== '1') return void res.json(skills);
+    let ctx = EMPTY_CONTEXT;
+    const pid = req.query.forProject ? String(req.query.forProject) : '';
+    if (pid) {
+      const p = await getProject(pid);
+      if (!p) return void res.status(404).json({ error: '项目不存在' });
+      ctx = await projectRankContext(p.path, p.name);
+    }
+    res.json(rankSkills(skills, ctx));
   }));
 
   // git 任务进度:安装/更新的 clone/pull 进度,GUI/Electron 轮询渲染进度条
