@@ -6,7 +6,7 @@
 
 ### 按项目管理 Agent Skills:一个项目一套技能组合,模型不再调错技能
 
-[![Version](https://img.shields.io/badge/version-1.2.0-blue.svg)](https://github.com/Chongrong1234/Skills_switchtool)
+[![Version](https://img.shields.io/badge/version-1.4.5-blue.svg)](https://github.com/Chongrong1234/Skills_switchtool/releases)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](https://nodejs.org)
 [![Runtime Deps](https://img.shields.io/badge/runtime%20deps-2-orange.svg)](package.json)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%C2%B7%20Windows%20%C2%B7%20macOS-lightgrey.svg)](electron-builder.yml)
@@ -65,6 +65,69 @@ ssw project switch api-server    # 激活项目 → 该项目的技能组合自�
 | 🔥 **热度排序选配** | 给项目/全局共享选技能时,常用的排前面:记录每个 skill 的使用次数(绑定即计、只增不减)、GitHub 仓库 stars(安装/更新时采集),再结合项目技术栈与名称关键词匹配加权排序;AI 推荐也把 stars/用量作为相关度相近时的优先依据 |
 | 🖥️ **两种打开方式** | Electron 桌面 App 点点点、纯 CLI/终端面板——同一份核心,同一份状态 |
 | 🪶 **极致轻量** | 运行时仅 2 个依赖(express + commander);CLI 可打成零依赖单文件,拷到服务器即用 |
+
+## 下载(从头开始,复制粘贴即用)
+
+所有发布版本都在 [GitHub Releases](https://github.com/Chongrong1234/Skills_switchtool/releases) 页面。以下命令均可直接复制粘贴;示例用最新版 **v1.4.5**,下载历史版本把版本号换掉即可(现有:`v1.4.5`、`v1.2.0`)。
+
+### Linux 桌面版(AppImage)
+
+```bash
+# 下载
+curl -L -o Skills.SwitchTool.AppImage \
+  https://github.com/Chongrong1234/Skills_switchtool/releases/download/v1.4.5/Skills.SwitchTool-1.4.5.AppImage
+
+# 赋可执行权限并运行(也可在文件管理器里双击)
+chmod +x Skills.SwitchTool.AppImage
+./Skills.SwitchTool.AppImage
+```
+
+不想记版本号,一条命令永远拿最新版:
+
+```bash
+url=$(curl -s https://api.github.com/repos/Chongrong1234/Skills_switchtool/releases/latest \
+  | grep -o '"browser_download_url": *"[^"]*AppImage"' | cut -d'"' -f4) \
+  && curl -L -o Skills.SwitchTool.AppImage "$url" \
+  && chmod +x Skills.SwitchTool.AppImage && ./Skills.SwitchTool.AppImage
+```
+
+> 容器/受限环境中启动需追加 `--no-sandbox`。
+
+### Windows 桌面版(NSIS 安装包,中文安装向导)
+
+浏览器直接下载:[Skills.SwitchTool.Setup.1.4.5.exe](https://github.com/Chongrong1234/Skills_switchtool/releases/download/v1.4.5/Skills.SwitchTool.Setup.1.4.5.exe),双击按向导安装(可选安装目录)。
+
+或在 PowerShell 中复制粘贴:
+
+```powershell
+curl.exe -L -o Skills.SwitchTool.Setup.exe `
+  "https://github.com/Chongrong1234/Skills_switchtool/releases/download/v1.4.5/Skills.SwitchTool.Setup.1.4.5.exe"
+.\Skills.SwitchTool.Setup.exe        # 向导式安装;静默安装用 .\Skills.SwitchTool.Setup.exe /S
+```
+
+### macOS 桌面版(dmg,Apple Silicon)
+
+```bash
+curl -L -o Skills.SwitchTool.dmg \
+  https://github.com/Chongrong1234/Skills_switchtool/releases/download/v1.4.5/Skills.SwitchTool-1.4.5-arm64.dmg
+open Skills.SwitchTool.dmg    # 拖进「应用程序」;未签名,首次打开需右键 →「打开」
+```
+
+### 服务器 / 纯 CLI(零依赖单文件)
+
+CLI 单文件不随 Release 发布,从源码构建一次即可(只需 Node ≥ 18):
+
+```bash
+git clone https://github.com/Chongrong1234/Skills_switchtool.git
+cd Skills_switchtool
+npm install
+npm run dist:cli            # 产出 release/cli/ssw.mjs:零依赖,拷到任意服务器即用
+
+./release/cli/ssw.mjs doctor     # 先自检环境
+./release/cli/ssw.mjs            # TTY 下裸跑进入交互式终端面板
+```
+
+要从源码构建桌面 App 或跑测试,见下文「使用方法」。
 
 ## 使用方法
 
