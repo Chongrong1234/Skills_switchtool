@@ -4,7 +4,7 @@
 
 ## 项目概述
 
-**Skills SwitchTool**(`skills-switchtool`,v1.4.10):项目中心化的 Agent Skills 管理工具。交互模式仿照 cc-switch:**中央存储 + 切换 + 写入目标工具配置位置 + 快照可回滚**。
+**Skills SwitchTool**(`skills-switchtool`,v1.5.0):项目中心化的 Agent Skills 管理工具。交互模式仿照 cc-switch:**中央存储 + 切换 + 写入目标工具配置位置 + 快照可回滚**。
 
 核心概念:
 
@@ -17,6 +17,7 @@
 - **AI 技能推荐**(`src/core/ai.ts`):填开发需求,模型(OpenAI 兼容 chat/completions)读本地技能库给出初步推荐供勾选绑定,**新建项目弹窗与项目详情页均可多次调用**;同时**联网搜 GitHub**——模型输出 githubKeywords(没给则用需求里的英文词兜底),按 `topic:agent-skills <关键词>` 搜仓库(复用 recommend 的 24h 缓存),去重、排除已入库、按 star 降序,可一键安装入库;本地与联网两路成败互相隔离(库空跳过模型只走联网;模型挂了仍有 GitHub 结果);配置存 `ai.json`(baseUrl/model/apiKey,预设 Kimi/DeepSeek/OpenAI/OpenRouter,baseUrl 可填中转站);未配置 key/断网/解析失败一律降级为 `{ items: [], github: [], message }` 不抛异常;CLI(`ssw ai`)、REST(`/api/ai/*`)、桌面 GUI(新建项目弹窗 + 项目详情「AI 推荐」区 + 设置弹窗)、TUI(i 键)均已接入。
 - **快照回滚**:每次 apply 前在 `snapshots/<projectId>/` 建快照(全局共享用 `snapshots/__global__/`),每项目保留最近 5 份,`rollback` 逆序还原最近一次(skills 与 MCP 同一份快照,一起还原)。
 - **热度排序选配**(`src/core/rank.ts`):给项目/全局共享选技能时,常用的排前面。三个信号加权:使用次数(绑定即计——`registry.markSkillsUsed` 挂在 updateProject/updateGlobal 的技能集差集上,只增不减,每次 +10)> 项目分类匹配(技术栈 + 项目名分词命中 skill 的 name/description/tags,每个 +6;`projectRankContext` 复用 recommend 的检测/分词口径)> 仓库 stars(安装/更新时 `fetchRepoStars` 采集,软失败;log10 压量纲 ×4)。`rankSkills` 稳定降序;REST `GET /api/skills?rank=1[&forProject=id]`(不带 rank 保持注册表原顺序,向后兼容)、GUI 两个"从库中添加"弹窗、AI 推荐载荷(stars/uses 作相关度 tie-break)均已接入;CLI `skill list` 与 TUI 技能库视图带 ★/用N 热度标记;重装/更新 skill 时 upsert 保留 useCount/stars 统计。
+- **自动更新系统**(`src/core/update.ts`):对照 GitHub Releases 最新 release 检查新版本——版本比较只看 X.Y.Z 数字段(解析不了按更旧,坏 tag 不误报),6h 磁盘缓存(`cache/update-latest.json`)+ 并发在途去重,断网/限流降级 `{ ok:false, message }` 不抛异常。`pickAsset` 按平台挑安装包(win→Setup*.exe / mac→按 arch 匹配 dmg / linux→AppImage);下载流式写 `.part` 再原子改名落盘 `<SSW_HOME>/downloads/`(置可执行位),进度并入 `/api/progress`,同文件已下载幂等跳过。配置存 `update.json`(autoCheck 默认开 / autoDownload 默认关);桌面 App 启动时按配置自动检查(开自动下载则后台拉包),全静默。CLI(`ssw update`)、REST(`/api/update/*`)、桌面 GUI(设置弹窗 + 侧栏横幅)、TUI(U 键)均已接入。
 
 两个前端共享同一个 TypeScript 核心引擎(`src/core/`),也共享同一份磁盘状态(`SSW_HOME`):
 
@@ -51,15 +52,18 @@ CLI 本机使用:`npm run build` 后 `node dist/cli.js ...`(`package.json` 已�
 ```
 src/
   core/                  # 核心引擎,不依赖任何前端;GUI/CLI/Electron 零改动复用
-    paths.ts             # SSW_HOME 路径常量(含 globalFile、aiFile);每次调用重读环境变量(测试隔离的关键);
-                         #   ensureSkeleton() 启动时建目录骨架
+    paths.ts             # SSW_HOME 路径常量(含 globalFile、aiFile、updateFile、downloadsDir);每次调用重读环境变量(测试隔离的关键);
+                         #   ensureSkeleton() 启动时建目录骨架(downloads/ 不在骨架里,真正下载时才建)
     types.ts             # SkillEntry(含 stars/useCount/lastUsedAt 热度字段) / McpEntry / Project / ProjectsData / ApplyMode
     registry.ts          # registry.json 读写;atomicWriteJson(tmp+rename 原子写,renameWithRetry 退避重试
                          #   Windows 杀软瞬时持锁的 EPERM;写完 chmod 0o600——ai.json/mcps.json 含密钥,
                          #   对齐各家 CLI 凭据文件惯例,Windows 上静默跳过)、readJsonSafe(损坏容错);
                          #   markSkillsUsed:绑定进项目/全局共享时 useCount+1、刷新 lastUsedAt(只增不减)
     library.ts           # 中央库:github→git clone --depth 1(可选 subdir 子目录为扫描根,registerSkillsIn 可单测;
-                         #   subdir 只允许 '/' 分隔,显式拒绝 '\' 与 ':'——防 Windows 路径穿越到库外被递归删除)、
+                         #   subdir 只允许 '/' 分隔,显式拒绝 '\' 与 ':'——防 Windows 路径穿越到库外被递归删除;
+                         #   未指定 subdir 且根级扫描落空时 registerSkillsWithFallback 自动探测
+                         #   skills/.agents/skills/.claude/skills 常见合集子目录——联网推荐命中的合集仓库
+                         #   多把 skills 收在子目录,只扫根级会误报"未找到合法 skill")、
                          #   local→复制、卸载、更新、initSkill 脚手架(可选 content:粘贴的完整 SKILL.md
                          #   剥原 frontmatter 重新生成,name/description 可由其兜底,显式参数优先);
                          #   adoptFromAgent:收养 agent 用户级/项目级目录里既有的 skills 进库
@@ -72,6 +76,9 @@ src/
                          #   + clone/pull --progress 进度段解析后兵分两路:TTY 渲染进度条到 stderr
                          #   (不污染 --json 的 stdout),同时写 gitProgress 内存表(listGitProgress)
                          #   供 GET /api/progress 轮询——桌面 GUI 的进度条数据源;
+                         #   进度解析(parseProgressSegment/summarizeStderr,PROGRESS_LINE_RE)语言无关:
+                         #   git 输出随界面语言本地化(zh_CN"接收对象中"),阶段名正则不匹配会解析不出
+                         #   百分比、GUI 进度条不显示,错误摘要也会被进度行污染;
                          #   clone 失败清理残目录;
                          #   validateSkillDir 校验 SKILL.md frontmatter(name/description 必填);
                          #   skill 名校验含 Windows 保留名(CON/PRN 等)拒绝;
@@ -135,10 +142,20 @@ src/
                          #   CatalogFilter.kind(catalogEntryKind 口径,缺省视为 skill)把 skills 与 MCP
                          #   的浏览/安装分流:REST ?kind=、CLI --kind、TUI k 键、GUI 类型标签页共用
     doctor.ts            # 环境自检 runDoctor():数据目录可写/git 探活(spawn git --version,10s 超时)/
-                         #   agent 检测(排除恒真的 'agents')/四个 JSON 数据文件健康度(缺失=首用 ok,
+                         #   agent 检测(排除恒真的 'agents')/五个 JSON 数据文件健康度(缺失=首用 ok,
                          #   损坏=error 附修复 hint——运行时被 readJsonSafe 容错吞掉的损坏在这里暴露)+ 统计;
                          #   git 缺失与零 agent 检测只算 warn,ok = 无 error 级;CLI doctor / /api/doctor /
                          #   TUI d 键 / GUI 设置弹窗共用
+    update.ts            # 软件更新:对照 GitHub Releases 检查新版本(compareVersions 只看 X.Y.Z,解析不了
+                         #   按更旧);6h 磁盘缓存 cache/update-latest.json + inflight 并发去重 + lastResult
+                         #   内存态;失败降级 { ok:false, message } 不抛(UpdateError 只用于配置校验/打开器
+                         #   输入错误,映射 400);pickAsset 按 platform/arch 挑安装包(win→Setup*.exe,
+                         #   mac→arm64/非 arm64 dmg,linux→AppImage);downloadUpdate 流式写 .part 再
+                         #   renameWithRetry,落盘 downloads/(chmod 755 软失败),在途拒绝并发,同文件
+                         #   已下载幂等;listUpdateProgress 合并进 /api/progress(GUI 进度条复用);
+                         #   openExternal 只接受 https URL/绝对路径;autoUpdateOnStartup 按 update.json
+                         #   配置(autoCheck/autoDownload)启动自检+后台下载,全静默;
+                         #   SSW_UPDATE_API(测试注入)/SSW_UPDATE_TIMEOUT_MS(默认 30s)env 覆盖
   adapters/
     types.ts             # AgentAdapter 接口(id/displayName/detect/projectSkillsDir/userSkillsDir/capabilities/mcp?);
                          #   userSkillsDir() 是全局共享 apply 的目标(用户级 skills 目录);
@@ -168,16 +185,22 @@ src/
                          #   /api/mcps CRUD + /api/projects/:id/mcps 绑定(校验名字在注册表存在);
                          #   /api/global GET/PUT + apply/unapply/rollback;/api/profile/export|import;
                          #   GET /api/catalog[?category=&q=&kind=skill|mcp]:推荐库,kind 把 skills 与 MCP 分流;
-                         #   GET /api/progress:git clone/pull 任务进度(前端进度条轮询);
+                         #   GET /api/progress:git clone/pull + 更新下载任务进度(前端进度条轮询);
                          #   GET /api/skills?rank=1[&forProject=id] 热度排序(不带 rank 保持原顺序);
                          #   POST /api/skills/adopt 收养 agent 目录既有 skills;{ all: true } 一次
                          #   收养所有 agent(缺省 user 级,返回 scanned/skippedAgents 分明细);
                          #   /api/ai/config GET(掩码)/PUT、/api/ai/test(保存前可带表单值先测)、
                          #   /api/ai/recommend(requirement 必填,降级不抛错);
-                         #   GET /api/doctor:环境自检报告(带 version,GUI 设置弹窗数据源)
+                         #   GET /api/doctor:环境自检报告(带 version,GUI 设置弹窗数据源);
+                         #   /api/update/*:status(当前版本+配置+最近检查+下载任务,不发网络)、
+                         #   check(强制刷新)、config PUT、download(202 异步;在途 409;同文件
+                         #   已下载幂等 already;检查失败 502)、open(target release|download,
+                         #   目标由服务端解析,只放行本项目 releases URL 与 downloads 目录)
   serve.ts               # startServer(port, host?) 启动函数:仅 Electron 主进程进程内调用(127.0.0.1+随机端口);
                          #   listen 前自动 adoptFromAllAgents(user 级)——打开 App 即在技能库看到本机
-                         #   各 agent 已配置的 skills;失败静默降级不影响启动
+                         #   各 agent 已配置的 skills;失败静默降级不影响启动;
+                         #   listen 后 fire-and-forget 调 autoUpdateOnStartup(按 update.json 自动检查/
+                         #   自动下载更新,全静默)
   cli.ts                 # ssw/skills 入口:全部子命令;id|name 寻址(id 精确优先,name 歧义列候选报错;
                          #   项目与 skill 都支持,skill 用名称简写免敲 local:x 长 id);
                          #   --json;无参数且 TTY 时动态 import tui.js 进终端面板,非 TTY 打印帮助;
@@ -196,15 +219,19 @@ src/
                          #   ai config [--preset/--base-url/--model/--api-key](不带选项=查看+预设清单)/ test /
                          #   recommend "<需求>" [--bind 项目](并入技能集),输出含 GitHub 联网推荐段;
                          #   project create --ai "<需求>" 创建即推荐并自动绑定;本地/联网两路都无结果退出码才非零;
-                         #   profile export [--file](警告打 stderr)/ import <file>(导入 failed 非零时退出码 1)
-  tui.ts                 # 终端交互面板:项目列表(光标项目附技能/MCP 绑定摘要行)+ ↑↓/Enter/n/x/a/u/r/i/s/m/g/c/d/q
+                         #   profile export [--file](警告打 stderr)/ import <file>(导入 failed 非零时退出码 1);
+                         #   update 软件更新:不带选项=强制检查并打印(发现新版本带发布页/安装包大小/
+                         #   下一步引导);--download 下载安装包(TTY 进度条写 stderr);--open 打开发布页;
+                         #   --auto-check|--auto-download on|off 写 update.json(纯本地,不发网络)
+  tui.ts                 # 终端交互面板:项目列表(光标项目附技能/MCP 绑定摘要行)+ ↑↓/Enter/n/x/a/u/r/i/s/m/g/c/d/U/q
                          #   按键(n 新建项目:依次询问名称/路径/agents/模式/开发需求,字段与 GUI 新建项目弹窗同口径,
                          #   填了需求则 AI 推荐并整体绑定;x 删除项目档案:y 二次确认,只删档案不动磁盘文件;
                          #   g 全局共享视图内 a/u/r 作用于全局;推荐库视图内 c 循环切换分类过滤、
                          #   k 循环切换类型过滤——全部/仅 skills/仅 MCP,与分类过滤叠加,skills 与 MCP 分流;
                          #   i AI 推荐:readline 临时退出 raw 模式读一行需求,结果视图含本地库+GitHub 联网两段,
                          #   任一路有结果即进 ai 视图,a 全部并入光标项目;
-                         #   d 环境自检视图(d 重跑);技能库视图带 ★/用N 热度标记;技能库/MCP/推荐库只读);
+                         #   d 环境自检视图(d 重跑);U 软件更新视图(进入即强制检查,U 重查;
+                         #   下载与配置修改指向 CLI ssw update);技能库视图带 ★/用N 热度标记;技能库/MCP/推荐库只读);
                          #   stdin raw 模式 + ANSI 整帧重绘
   version.ts             # 版本号单一来源:运行时读 ../package.json(src/ 与 dist/ 都恰在根下一层);
                          #   esbuild 打包单文件时 define 注入 __SSW_VERSION__
@@ -215,7 +242,10 @@ public/                  # 原生单页应用(index.html / app.js / style.css),�
                          #   新建项目弹窗与项目详情页均含「开发需求」AI 推荐区(可多次调用,结果存 state.aiBox
                          #   重绘后恢复;runAiRecommend+renderAiBox 共享渲染:本地推荐勾选绑定,
                          #   GitHub 联网推荐一键安装并绑定,已绑定/已入库禁用态);
-                         #   设置弹窗含 AI 配置(预设/baseUrl/模型/Key + 测连);
+                         #   设置弹窗含 AI 配置(预设/baseUrl/模型/Key + 测连)与「软件更新」区
+                         #   (当前版本/检查更新/下载进度条/打开下载目录/autoCheck+autoDownload 开关);
+                         #   侧栏顶部更新横幅(#update-banner,发现新版本或下载完成时浮现,点击开设置弹窗,
+                         #   数据源 refreshUpdateBanner → GET /api/update/status);
                          #   MCP 服务页每个 server 带「设置」按钮,弹窗编辑配置(名称锁定,POST /api/mcps 同名 upsert 保存);
                          #   「从库中添加技能」弹窗(项目/全局共享)添加后不关窗、该行按钮变「已添加」禁用态,
                          #   方便连续添加大量技能,点「关闭」/遮罩才退出(先本地入列再发请求,防连点互冲);
@@ -240,7 +270,7 @@ electron-builder.yml     # 打包配置:Linux AppImage + Windows NSIS(中文安�
 - **路径不硬编码 `~/.skills-switch`**:一律用 `src/core/paths.ts` 的函数,保证 `SSW_HOME` 覆盖生效。
 - **降级而非崩溃**是既定策略:推荐引擎断网降级空结果;symlink 失败降级 copy 并告警;JSON 损坏容错为空。
 - CLI 约定:错误信息打 **stderr** 且退出码非零,成功输出打 stdout;缺必填参数时报错并打印该命令用法。
-- API 约定:REST + JSON,错误统一 `{ "error": "..." }`;`LibraryError`/`McpError`/`AiError` 映射 400,其余 500。
+- API 约定:REST + JSON,错误统一 `{ "error": "..." }`;`LibraryError`/`McpError`/`AiError`/`UpdateError` 映射 400,其余 500。
 
 ## 测试
 
@@ -248,7 +278,7 @@ electron-builder.yml     # 打包配置:Linux AppImage + Windows NSIS(中文安�
 - 测试文件在 `tests/*.test.ts`,每个 core 模块一个对应文件,外加:`platform.test.ts`(Windows 专项:symlink EPERM 降级 copy、git 不在 PATH 的可读报错、Windows 保留名拒绝)、`server.test.ts`(起真实 HTTP 服务验证校验逻辑与 CLI 对齐)、`cli.test.ts`(端到端,用 `child_process` 跑**编译产物** `dist/cli.js`,`beforeAll` 里先自动跑 `npm run build`;Windows 上改用 `npm.cmd` 且必须带 `shell: true`——Node ≥18.20/20.12 起无 shell 直接 spawn `.cmd` 会抛 EINVAL,只换名字绕不过)。
 - **隔离约定(必须遵守)**:测试在 `beforeEach` 里把 `process.env.SSW_HOME` 指向 `fs.mkdtemp` 临时目录,`afterEach` 里删除该环境变量并 `rm` 临时目录——绝不触碰真实 `~/.skills-switch`。涉及真实文件系统的测试保持串行(这也是 `pool: 'forks'` 的原因)。`global.test.ts` 额外用 `vi.spyOn(os, 'homedir')` 指到临时目录,绝不触碰真实 home。
 - 网络相关测试注入假 `fetch`(`recommendForProject(path, name, fetchImpl)` 的第三参、`aiRecommendSkills({ ..., fetchImpl })` 与 `testAiConnection(overrides, fetchImpl)`),不打真实 GitHub/模型 API。
-- 提交改动前跑 `npm test`,当前基线:**18 个文件 206 个用例全绿**。push/PR 由 `.github/workflows/ci.yml` 跑三平台 × Node 18/20/22。
+- 提交改动前跑 `npm test`,当前基线:**19 个文件 230 个用例全绿**。push/PR 由 `.github/workflows/ci.yml` 跑三平台 × Node 18/20/22。
 
 ## 安全注意事项
 

@@ -5,7 +5,7 @@ import http, { type Server } from 'node:http';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PROFILE_FORMAT } from '../src/core/profile.js';
 import { createApp } from '../src/server.js';
 
@@ -64,7 +64,7 @@ describe('server 校验(与 CLI 行为对齐)', () => {
     expect(typeof r.data.version).toBe('string');
     expect(r.data.ok).toBe(true);
     expect(r.data.sswHome).toBe(tmp);
-    expect(r.data.checks.map((c: { id: string }) => c.id)).toEqual(['ssw-home', 'git', 'agents', 'registry', 'projects', 'mcps', 'global']);
+    expect(r.data.checks.map((c: { id: string }) => c.id)).toEqual(['ssw-home', 'git', 'agents', 'registry', 'projects', 'mcps', 'global', 'update']);
     expect(r.data.stats).toEqual({ skills: 0, mcps: 0, projects: 0, activeProject: null });
   });
 
@@ -341,5 +341,110 @@ describe('profile 导入大 bundle(express.json 默认 100KB 曾把 GUI 导入 4
     const r = await api('POST', '/api/profile/import', { bundle });
     expect(r.status).toBe(200);
     expect(r.data.warnings).toEqual([]);
+  });
+});
+
+describe('软件更新端点(GitHub API 走假 fetch,其余请求代理回真实 fetch)', () => {
+  const fakeRelease = {
+    tag_name: 'v99.0.0',
+    html_url: 'https://github.com/Chongrong1234/Skills_switchtool/releases/tag/v99.0.0',
+    published_at: '2026-09-01T00:00:00Z',
+    assets: [
+      {
+        name: 'Skills.SwitchTool-99.0.0.AppImage',
+        browser_download_url: 'https://fake.test/dl.AppImage',
+        size: 9,
+      },
+    ],
+  };
+
+  function stubGithubFetch(): void {
+    const realFetch = globalThis.fetch;
+    vi.stubGlobal('fetch', (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('api.github.com')) {
+        return new Response(JSON.stringify(fakeRelease), { status: 200 });
+      }
+      if (url.startsWith('https://fake.test/')) {
+        return new Response('hello-app', { status: 200, headers: { 'content-length': '9' } });
+      }
+      return realFetch(input, init);
+    }) as typeof fetch);
+  }
+
+  // 注意:本用例依赖"进程内尚无成功检查结果"(update.ts 的 lastResult 是模块级状态),
+  // 必须定义在本 describe 最前面——vitest 同文件内按定义顺序执行
+  it('尚未检查过且检查失败时,download 返回 502(不建任务)', async () => {
+    const realFetch = globalThis.fetch;
+    vi.stubGlobal('fetch', (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('api.github.com')) return new Response('x', { status: 503 });
+      return realFetch(input, init);
+    }) as typeof fetch);
+    try {
+      const dl = await api('POST', '/api/update/download', {});
+      expect(dl.status).toBe(502);
+      expect(dl.data.error).toContain('检查更新失败');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('status/config/check/download/open 全链路', async () => {
+    stubGithubFetch();
+    try {
+      // 状态:默认配置(自动检查开、自动下载关),不发网络请求
+      const st0 = await api('GET', '/api/update/status');
+      expect(st0.status).toBe(200);
+      expect(typeof st0.data.current).toBe('string');
+      expect(st0.data.config).toEqual({ autoCheck: true, autoDownload: false });
+
+      // 配置写回 + 非布尔 400
+      const cfg = await api('PUT', '/api/update/config', { autoDownload: true });
+      expect(cfg.status).toBe(200);
+      expect(cfg.data).toEqual({ autoCheck: true, autoDownload: true });
+      expect((await api('PUT', '/api/update/config', { autoCheck: 'yes' })).status).toBe(400);
+
+      // 手动检查(强制):发现新版本,linux 下挑到 AppImage
+      const chk = await api('POST', '/api/update/check', {});
+      expect(chk.status).toBe(200);
+      expect(chk.data.ok).toBe(true);
+      expect(chk.data.hasUpdate).toBe(true);
+      expect(chk.data.latest).toBe('99.0.0');
+      if (process.platform === 'linux') {
+        expect(chk.data.asset?.name).toBe('Skills.SwitchTool-99.0.0.AppImage');
+      }
+
+      // status 现在带最近检查结果
+      const st1 = await api('GET', '/api/update/status');
+      expect(st1.data.last?.hasUpdate).toBe(true);
+
+      // open:非法 target 400(成功路径会 spawn 系统打开器,CI 未必有 xdg-open,不断言)
+      const badOpen = await api('POST', '/api/update/open', { target: 'nope' });
+      expect(badOpen.status).toBe(400);
+
+      // download:202 异步开始;轮询 status 到完成;文件落在数据目录 downloads/
+      const dl = await api('POST', '/api/update/download', {});
+      expect(dl.status).toBe(202);
+      expect(dl.data.started).toBe(true);
+      let job: { done: boolean; error?: string; file?: string } | null = null;
+      for (let i = 0; i < 100; i++) {
+        const s = await api('GET', '/api/update/status');
+        job = s.data.download;
+        if (job?.done) break;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(job?.done).toBe(true);
+      expect(job?.error).toBeUndefined();
+      expect(job?.file).toContain('Skills.SwitchTool-99.0.0.AppImage');
+      expect(await fs.readFile(job!.file!, 'utf8')).toBe('hello-app');
+
+      // 同一文件已完整下载过 → 幂等 already,不重复拉
+      const again = await api('POST', '/api/update/download', {});
+      expect(again.status).toBe(200);
+      expect(again.data.already).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

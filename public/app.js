@@ -16,6 +16,7 @@ const state = {
   catalogQuery: '',        // 推荐库当前搜索词
   serverCwd: null,         // /api/meta 缓存:服务进程 cwd,新建项目预填路径用
   aiBox: null,             // 项目详情 AI 推荐区的最近结果 {projectId, requirement, rec}:render 重绘后保留,支持反复调用/多次操作
+  update: null,            // /api/update/status 缓存 {current, config, last, download}:侧栏更新横幅数据源
 };
 
 // ---------- 工具 ----------
@@ -359,6 +360,27 @@ function agentCheckboxList(selected = []) {
     </label>`).join('');
 }
 
+// ---------- 更新横幅(侧栏:发现新版本/下载完成时出现,点击打开设置弹窗) ----------
+async function refreshUpdateBanner() {
+  const banner = document.getElementById('update-banner');
+  try {
+    const st = await api('GET', '/api/update/status');
+    state.update = st;
+    const last = st.last;
+    const dl = st.download;
+    banner.style.display = 'none';
+    if (dl && dl.done && !dl.error && dl.file) {
+      banner.style.display = '';
+      banner.textContent = `⬆ 新版本${last?.latest ? ` v${last.latest}` : ''}已下载,点击安装`;
+    } else if (last && last.ok && last.hasUpdate) {
+      banner.style.display = '';
+      banner.textContent = `⬆ 发现新版本 v${last.latest},点击更新`;
+    }
+  } catch {
+    banner.style.display = 'none'; // 状态接口都挂了就不打扰,功能本身降级
+  }
+}
+
 // ---------- 设置 ----------
 function openSettingsModal() {
   const cur = getTheme();
@@ -368,6 +390,27 @@ function openSettingsModal() {
       <div class="radio-group">
         <label><input type="radio" name="st-theme" value="dark" ${cur === 'dark' ? 'checked' : ''} /> 深色</label>
         <label><input type="radio" name="st-theme" value="light" ${cur === 'light' ? 'checked' : ''} /> 浅色</label>
+      </div>
+    </div>
+    <div class="form-row"><label>软件更新(从 GitHub Releases 检查新版本;下载安装包后需手动替换/安装)</label>
+      <div class="ai-form">
+        <div class="ai-row"><span class="ai-label">当前版本</span><span class="rdesc" id="st-upd-version">…</span></div>
+        <div class="ai-row"><span class="ai-label">状态</span><span class="rdesc" id="st-upd-status">加载中…</span></div>
+        <div class="ai-row" id="st-upd-prow" style="display:none">
+          <div class="prog-bar" style="flex:1"><div class="prog-fill" id="st-upd-pfill" style="width:0%"></div></div>
+          <span class="rdesc" id="st-upd-ptext"></span>
+        </div>
+        <div class="ai-row">
+          <label class="ai-pick"><input type="checkbox" id="st-upd-autocheck" /> 启动时自动检查更新</label>
+          <label class="ai-pick"><input type="checkbox" id="st-upd-autodl" /> 发现新版本时自动下载</label>
+        </div>
+        <div class="ai-row">
+          <button class="btn btn-sm btn-primary" id="st-upd-check">检查更新</button>
+          <button class="btn btn-sm" id="st-upd-download" style="display:none">下载更新</button>
+          <button class="btn btn-sm" id="st-upd-open" style="display:none">发布页</button>
+          <button class="btn btn-sm" id="st-upd-opendir" style="display:none">打开下载目录</button>
+        </div>
+        <div class="rdesc">自动检查只发一次 GitHub API 请求(缓存 6h);自动下载开启后,启动 App 时发现新版本会后台下载好安装包</div>
       </div>
     </div>
     <div class="form-row"><label>AI 推荐(模型读本地技能库,新建项目时按需求推荐技能)</label>
@@ -404,6 +447,110 @@ function openSettingsModal() {
   modal.querySelector('#m-close').addEventListener('click', closeModal);
   modal.querySelectorAll('input[name="st-theme"]').forEach((r) =>
     r.addEventListener('change', () => setTheme(r.value)));
+
+  // ---- 软件更新:状态轮询(下载期间)+ 手动检查/下载/打开;配置改动即存 ----
+  const updEls = {
+    version: modal.querySelector('#st-upd-version'),
+    status: modal.querySelector('#st-upd-status'),
+    prow: modal.querySelector('#st-upd-prow'),
+    pfill: modal.querySelector('#st-upd-pfill'),
+    ptext: modal.querySelector('#st-upd-ptext'),
+    autocheck: modal.querySelector('#st-upd-autocheck'),
+    autodl: modal.querySelector('#st-upd-autodl'),
+    check: modal.querySelector('#st-upd-check'),
+    download: modal.querySelector('#st-upd-download'),
+    open: modal.querySelector('#st-upd-open'),
+    opendir: modal.querySelector('#st-upd-opendir'),
+  };
+  let updTimer = null;      // 下载进行中的状态轮询
+  let updWasRunning = false; // 运行中 → 完成的跳变检测(完成时弹 toast + 刷新侧栏横幅)
+  const renderUpdate = (st) => {
+    if (!modal.isConnected) { // 弹窗已关:停轮询,不再渲染
+      if (updTimer) { clearInterval(updTimer); updTimer = null; }
+      return;
+    }
+    state.update = st;
+    updEls.version.textContent = `v${st.current}`;
+    updEls.autocheck.checked = !!st.config.autoCheck;
+    updEls.autodl.checked = !!st.config.autoDownload;
+    const last = st.last;
+    const dl = st.download;
+    let text = '尚未检查更新';
+    let showDownload = false;
+    let showOpen = false;
+    let showOpendir = false;
+    if (last) {
+      if (!last.ok) text = `检查失败: ${last.message || '网络不可用'}`;
+      else if (last.hasUpdate) {
+        text = `发现新版本 v${last.latest}(当前 v${last.current})` +
+          (last.asset ? ` · 安装包 ${(last.asset.size / 1048576).toFixed(1)} MB` : ' · 该平台无匹配安装包');
+        showDownload = !!last.asset;
+        showOpen = true;
+      } else text = `已是最新版本(v${last.latest || last.current})`;
+    }
+    if (dl && !dl.done) {
+      text = `正在下载 ${dl.label} …`;
+      updEls.prow.style.display = '';
+      updEls.pfill.style.width = `${dl.pct ?? 0}%`;
+      updEls.ptext.textContent = dl.text || '';
+      updWasRunning = true;
+    } else {
+      updEls.prow.style.display = 'none';
+      if (dl && dl.done && !dl.error && dl.file) {
+        text = `已下载: ${dl.file}(Linux 替换旧 AppImage;Windows 运行安装包;macOS 打开 dmg)`;
+        showOpendir = true;
+        showOpen = true;
+        if (updWasRunning) { toast('更新包下载完成'); refreshUpdateBanner(); }
+      } else if (dl && dl.error) {
+        text = `下载失败: ${dl.error}`;
+        showDownload = !!(last && last.hasUpdate && last.asset);
+      }
+      if (updWasRunning) updWasRunning = false;
+      if (updTimer) { clearInterval(updTimer); updTimer = null; }
+    }
+    updEls.status.textContent = text;
+    updEls.download.style.display = showDownload ? '' : 'none';
+    updEls.open.style.display = showOpen ? '' : 'none';
+    updEls.opendir.style.display = showOpendir ? '' : 'none';
+  };
+  const loadUpdateStatus = () =>
+    api('GET', '/api/update/status').then(renderUpdate).catch(() => { updEls.status.textContent = '状态加载失败'; });
+  loadUpdateStatus();
+  updEls.autocheck.addEventListener('change', () => run(async () => {
+    await api('PUT', '/api/update/config', { autoCheck: updEls.autocheck.checked });
+    toast(updEls.autocheck.checked ? '已开启启动时自动检查' : '已关闭自动检查');
+  }));
+  updEls.autodl.addEventListener('change', () => run(async () => {
+    await api('PUT', '/api/update/config', { autoDownload: updEls.autodl.checked });
+    toast(updEls.autodl.checked ? '已开启发现新版本自动下载' : '已关闭自动下载');
+  }));
+  updEls.check.addEventListener('click', () => run(async () => {
+    updEls.check.disabled = true;
+    updEls.status.textContent = '检查中…';
+    try {
+      await api('POST', '/api/update/check'); // 结果落在 last,统一走 status 渲染
+      await loadUpdateStatus();
+      refreshUpdateBanner();
+    } finally { updEls.check.disabled = false; }
+  }));
+  updEls.download.addEventListener('click', () => run(async () => {
+    updEls.download.disabled = true;
+    try {
+      const r = await api('POST', '/api/update/download');
+      if (r.already) { await loadUpdateStatus(); return; }
+      // 下载异步进行:轮询状态渲染进度条(同时 /api/progress 的右下角进度条也会显示)
+      if (!updTimer) updTimer = setInterval(loadUpdateStatus, 800);
+      await loadUpdateStatus();
+    } finally { updEls.download.disabled = false; }
+  }));
+  updEls.open.addEventListener('click', () => run(async () => {
+    await api('POST', '/api/update/open', { target: 'release' });
+    toast('已在浏览器打开发布页');
+  }));
+  updEls.opendir.addEventListener('click', () => run(async () => {
+    await api('POST', '/api/update/open', { target: 'download' });
+    toast('已打开下载目录');
+  }));
 
   // ---- AI 配置:预设只负责预填 baseUrl/model,保存/测试都按表单当前值走 ----
   const aiEls = {
@@ -830,6 +977,8 @@ function openInstallGithubModal() {
     <h2>从 GitHub 安装</h2>
     <div class="form-row"><label>仓库地址(完整 URL 或 owner/repo)</label>
       <input type="text" id="gh-uri" placeholder="https://github.com/owner/repo" /></div>
+    <div class="form-row"><label>子目录(可选;合集仓库的 skills 所在目录,如 skills)</label>
+      <input type="text" id="gh-subdir" placeholder="留空:先扫根目录,落空自动探测 skills/ 等常见合集子目录" /></div>
     <div class="modal-actions">
       <button class="btn" id="m-cancel">取消</button>
       <button class="btn btn-primary" id="m-ok">安装</button>
@@ -838,11 +987,12 @@ function openInstallGithubModal() {
   modal.querySelector('#m-cancel').addEventListener('click', closeModal);
   modal.querySelector('#m-ok').addEventListener('click', () => run(async () => {
     const uri = modal.querySelector('#gh-uri').value.trim();
+    const subdir = modal.querySelector('#gh-subdir').value.trim();
     if (!uri) return toast('请输入仓库地址', 'err');
     const btn = modal.querySelector('#m-ok');
     btn.disabled = true; btn.textContent = '安装中…';
     try {
-      const installed = await apiWithProgress('POST', '/api/skills', { source: 'github', uri });
+      const installed = await apiWithProgress('POST', '/api/skills', { source: 'github', uri, ...(subdir ? { subdir } : {}) });
       await loadAll();
       closeModal();
       render();
@@ -1539,8 +1689,11 @@ document.querySelectorAll('.view-btn').forEach((b) =>
   }));
 document.getElementById('btn-new-project').addEventListener('click', openNewProjectModal);
 document.getElementById('btn-settings').addEventListener('click', openSettingsModal);
+document.getElementById('update-banner').addEventListener('click', openSettingsModal);
 
 run(async () => {
   await loadAll();
   render();
 });
+// 启动后拉一次更新状态(服务端启动自检可能仍在进行,这里拿到的是当前已知状态;失败静默)
+refreshUpdateBanner();

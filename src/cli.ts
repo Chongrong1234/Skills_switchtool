@@ -45,6 +45,13 @@ import { CATALOG, listCatalogCategories, listCatalogWithInstalled } from './core
 import { exportSkillsCode, importSkillsCode, parseSkillsCode } from './core/migrate.js';
 import { rollback } from './core/snapshot.js';
 import { runDoctor } from './core/doctor.js';
+import {
+  checkForUpdate,
+  downloadUpdate,
+  getUpdateDownload,
+  openExternal,
+  saveUpdateConfig,
+} from './core/update.js';
 import type { Project, SkillEntry } from './core/types.js';
 import { readRegistry } from './core/registry.js';
 import { VERSION } from './version.js';
@@ -971,6 +978,106 @@ leaf(
     // 存在 error 级问题时退出码非零,便于脚本/CI 判断(warn 不算失败)
     if (!report.ok) process.exitCode = 1;
   }),
+);
+
+// ---------- update 软件更新 ----------
+leaf(
+  program
+    .command('update')
+    .description('软件更新:对照 GitHub Releases 检查新版本(不带选项 = 立即检查)')
+    .option('--download', '下载匹配当前平台的安装包到数据目录 downloads/')
+    .option('--open', '用浏览器打开最新 release 发布页')
+    .option('--auto-check <on|off>', '启动时自动检查更新(桌面 App;不带其他选项时只保存配置)')
+    .option('--auto-download <on|off>', '发现新版本时自动下载安装包(不带其他选项时只保存配置)'),
+).action(
+  wrap(
+    async (
+      cmd,
+      opts: { download?: boolean; open?: boolean; autoCheck?: string; autoDownload?: string },
+    ) => {
+      // 配置开关:纯本地读写,不发网络请求
+      if (opts.autoCheck !== undefined || opts.autoDownload !== undefined) {
+        const parseBool = (v: string | undefined, flag: string): boolean | undefined => {
+          if (v === undefined) return undefined;
+          if (v === 'on') return true;
+          if (v === 'off') return false;
+          throw new Error(`${flag} 只能是 on 或 off`);
+        };
+        const cfg = await saveUpdateConfig({
+          autoCheck: parseBool(opts.autoCheck, '--auto-check'),
+          autoDownload: parseBool(opts.autoDownload, '--auto-download'),
+        });
+        out(cmd, cfg, () =>
+          `更新配置已保存:自动检查 ${cfg.autoCheck ? '开' : '关'} · 自动下载 ${cfg.autoDownload ? '开' : '关'}`,
+        );
+        return;
+      }
+      // 打开发布页:不强制刷新,缓存/新查任一拿到 releaseUrl 即可
+      if (opts.open) {
+        const r = await checkForUpdate();
+        const url =
+          (r.ok && r.releaseUrl) || 'https://github.com/Chongrong1234/Skills_switchtool/releases';
+        await openExternal(url);
+        out(cmd, { opened: url }, () => `已在浏览器打开: ${url}`);
+        return;
+      }
+      const r = await checkForUpdate({ force: true });
+      if (opts.download) {
+        if (!r.ok) throw new Error(r.message ?? '检查更新失败');
+        if (!r.hasUpdate) {
+          out(cmd, r, () => `✓ 已是最新版本(v${r.current};最新 release: ${r.tag}),无需下载`);
+          return;
+        }
+        if (!r.asset) {
+          throw new Error(
+            `发现新版本 v${r.latest},但没有匹配当前平台的安装包;请到发布页手动下载: ${r.releaseUrl}`,
+          );
+        }
+        // TTY 下 500ms 轮询下载进度写 stderr(不污染 --json 的 stdout,与 git 进度条同约定)
+        const timer = process.stderr.isTTY
+          ? setInterval(() => {
+              const job = getUpdateDownload();
+              if (job) process.stderr.write(`\r\x1b[K下载中: ${job.text}`);
+            }, 500)
+          : null;
+        try {
+          const { file } = await downloadUpdate(r.asset);
+          const installHint =
+            process.platform === 'win32'
+              ? '运行该安装程序覆盖安装即可'
+              : process.platform === 'darwin'
+                ? '打开 dmg 把 App 拖入 Applications 替换旧版'
+                : '直接替换现有 AppImage 运行(可执行位已设置)';
+          out(cmd, { file, version: r.latest }, () => `已下载 v${r.latest}: ${file}\n安装: ${installHint}`);
+        } finally {
+          if (timer) {
+            clearInterval(timer);
+            process.stderr.write('\n');
+          }
+        }
+        return;
+      }
+      out(cmd, r, () => {
+        if (!r.ok) return `✗ ${r.message}`;
+        if (!r.hasUpdate) return `✓ 已是最新版本(v${r.current};最新 release: ${r.tag})`;
+        const lines = [
+          `发现新版本: v${r.latest}(当前 v${r.current},发布于 ${fmtTime(r.publishedAt)})`,
+          `发布页: ${r.releaseUrl}`,
+        ];
+        if (r.asset) {
+          lines.push(
+            `安装包: ${r.asset.name}(${(r.asset.size / 1048576).toFixed(1)} MB)`,
+            '下载: ssw update --download;浏览器打开发布页: ssw update --open',
+          );
+        } else {
+          lines.push('(没有匹配当前平台的安装包,请到发布页手动下载)');
+        }
+        return lines.join('\n');
+      });
+      // 检查失败(降级 message)时退出码非零,便于脚本判断
+      if (!r.ok) process.exitCode = 1;
+    },
+  ),
 );
 
 // 不带任何参数启动:TTY 下进入交互式终端面板,非 TTY(管道/脚本)打印帮助

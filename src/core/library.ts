@@ -6,6 +6,10 @@
  * 表现就是前端永远"安装中…"。clone/pull 带 --progress,进度段解析后兵分两路:
  * TTY 下渲染单行进度条到 stderr;同时写入 gitProgress 内存表供 /api/progress
  * 轮询(GUI/Electron 进度条)——大仓库克隆要好几分钟,零输出会让用户以为死机。
+ * 注意 git 输出随界面语言本地化(zh_CN 下是"接收对象中"而非 "Receiving objects"),
+ * 进度解析必须语言无关,否则中文系统永远解析不出百分比、进度条不显示。
+ * github 安装扫描根级落空时自动探测常见合集子目录(skills/ 等)——联网推荐命中的
+ * 合集仓库大多把 skills 收在子目录里,只扫根级会误报"仓库中未找到合法 skill"。
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -49,19 +53,29 @@ interface ProgressSegment {
   done: boolean;         // 该阶段收尾(100% 或带 done.)
 }
 
-/** 解析 git --progress 的一段(段间 \r 或 \n 分隔);空段返回 null */
-function parseProgressSegment(raw: string): ProgressSegment | null {
+/**
+ * git 进度行格式("<阶段>: <nn>% ...")。阶段名随 git 界面语言本地化
+ * (zh_CN: "接收对象中"/"处理 delta 中";en: "Receiving objects"/"Resolving deltas"),
+ * 正则按"非冒号段 + 冒号 + 百分比"匹配、不限定 ASCII——限定 [A-Za-z] 会让中文系统
+ * 永远解析不出百分比,GUI 进度条因此完全不显示。
+ */
+const PROGRESS_LINE_RE = /^([^:\s][^:]{0,29}):\s+(\d{1,3})%\s*(.*)$/;
+/** 阶段收尾标记:英文 "done." / 中文 "完成." */
+const PROGRESS_DONE_RE = /,?\s*(?:done|完成)\.?\s*$/;
+
+/** 解析 git --progress 的一段(段间 \r 或 \n 分隔);空段返回 null。导出供测试 */
+export function parseProgressSegment(raw: string): ProgressSegment | null {
   const text = raw.trim().replace(/^remote:\s*/, '');
   if (!text) return null;
-  const m = text.match(/^([A-Za-z][A-Za-z ]{0,30}):\s+(\d{1,3})%\s*(.*)$/);
+  const m = text.match(PROGRESS_LINE_RE);
   if (!m) return { text, phase: null, pct: null, rest: '', done: false };
   const pct = Math.min(100, Number(m[2]));
   return {
     text,
     phase: m[1],
     pct,
-    rest: m[3].replace(/,?\s*done\.?\s*$/, ''),
-    done: pct >= 100 || /done\.?\s*$/.test(m[3]),
+    rest: m[3].replace(PROGRESS_DONE_RE, ''),
+    done: pct >= 100 || PROGRESS_DONE_RE.test(m[3]),
   };
 }
 
@@ -119,12 +133,12 @@ function createProgressRenderer(label: string): { renderSegment: (seg: ProgressS
   };
 }
 
-/** 从 stderr 提取失败原因:剥掉进度段(百分比行),取最后几行有效内容 */
-function summarizeStderr(stderr: string): string {
+/** 从 stderr 提取失败原因:剥掉进度段(百分比行,含本地化阶段名),取最后几行有效内容。导出供测试 */
+export function summarizeStderr(stderr: string): string {
   return stderr
     .split(/[\r\n]+/)
     .map((s) => s.trim().replace(/^remote:\s*/, ''))
-    .filter((s) => s && !/^[A-Za-z][A-Za-z ]{0,30}:\s+\d{1,3}%/.test(s))
+    .filter((s) => s && !PROGRESS_LINE_RE.test(s))
     .slice(-6)
     .join('; ');
 }
@@ -392,8 +406,37 @@ export async function registerSkillsIn(
 }
 
 /**
- * 从 GitHub 安装:浅克隆后,根或第一层子目录中含 SKILL.md 的都登记入库。
- * subdir 可选:指定后以 <仓库>/<subdir> 为扫描根(主流合集仓库把 skills 放在 skills/ 子目录)。
+ * 合集仓库常见的 skills 集中子目录:未显式指定 subdir 且根级扫描落空时按序探测
+ * (topic:agent-skills 命中的合集仓库大多把 skills 收在这类子目录,只扫根级会误报"无 skill")。
+ */
+export const COMMON_SKILLS_SUBDIRS = ['skills', '.agents/skills', '.claude/skills'] as const;
+
+/**
+ * 登记扫描,带合集子目录兜底:显式 subdir 只扫该目录;
+ * 未指定 subdir 时先扫根级(自身 + 第一层),落空再按序探测 COMMON_SKILLS_SUBDIRS,
+ * 第一个扫出合法 skill 的子目录胜出(条目 id 记录为 "owner/repo:<subdir>/<name>")。
+ */
+export async function registerSkillsWithFallback(
+  repoDir: string,
+  repoId: string,
+  uri: string,
+  subdir?: string,
+  meta?: { stars?: number },
+): Promise<SkillEntry[]> {
+  const installed = await registerSkillsIn(repoDir, repoId, uri, subdir, meta);
+  if (installed.length > 0 || subdir !== undefined) return installed;
+  for (const probe of COMMON_SKILLS_SUBDIRS) {
+    const stat = await fs.stat(path.join(repoDir, probe)).catch(() => null);
+    if (!stat?.isDirectory()) continue;
+    const found = await registerSkillsIn(repoDir, repoId, uri, probe, meta);
+    if (found.length > 0) return found;
+  }
+  return installed;
+}
+
+/**
+ * 从 GitHub 安装:浅克隆后登记入库——显式 subdir 扫该子目录,否则先扫根/第一层,
+ * 落空自动探测常见合集子目录(registerSkillsWithFallback)。
  * 顺带采集仓库 star 数入条目(软失败不阻塞安装);fetchImpl 可注入(测试)。
  */
 export async function installFromGithub(uri: string, subdir?: string, fetchImpl: typeof fetch = fetch): Promise<SkillEntry[]> {
@@ -413,12 +456,16 @@ export async function installFromGithub(uri: string, subdir?: string, fetchImpl:
     throw new LibraryError(`git clone 失败: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  const installed = await registerSkillsIn(dest, `${owner}/${repo}`, uri, sub, {
+  const installed = await registerSkillsWithFallback(dest, `${owner}/${repo}`, uri, sub, {
     stars: await fetchRepoStars(owner, repo, fetchImpl),
   });
   if (installed.length === 0) {
     await fs.rm(dest, { recursive: true, force: true });
-    throw new LibraryError(`仓库中未找到合法 skill(无 SKILL.md): ${uri}${sub ? `(子目录 ${sub})` : ''}`);
+    throw new LibraryError(
+      `仓库中未找到合法 skill(无 SKILL.md): ${uri}` +
+      `${sub ? `(子目录 ${sub})` : '(已自动探测根目录与 skills/ 等常见合集子目录)'}` +
+      ';skills 在其它子目录时请显式指定 subdir 参数;awesome 清单/应用类仓库不含可安装的 skill',
+    );
   }
   return installed;
 }

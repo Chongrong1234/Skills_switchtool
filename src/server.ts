@@ -48,6 +48,18 @@ import {
 import { readRegistry } from './core/registry.js';
 import { rollback } from './core/snapshot.js';
 import { runDoctor } from './core/doctor.js';
+import {
+  checkForUpdate,
+  downloadUpdate,
+  getLastUpdateCheck,
+  getUpdateDownload,
+  listUpdateProgress,
+  openExternal,
+  readUpdateConfig,
+  saveUpdateConfig,
+  UpdateError,
+} from './core/update.js';
+import { downloadsDir } from './core/paths.js';
 import { VERSION } from './version.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -290,9 +302,9 @@ export function createApp(): express.Express {
     res.json(rankSkills(skills, ctx));
   }));
 
-  // git 任务进度:安装/更新的 clone/pull 进度,GUI/Electron 轮询渲染进度条
+  // git 任务进度:安装/更新的 clone/pull 进度 + 更新安装包下载进度,GUI/Electron 轮询渲染进度条
   app.get('/api/progress', (_req, res) => {
-    res.json({ jobs: listGitProgress() });
+    res.json({ jobs: [...listGitProgress(), ...listUpdateProgress()] });
   });
 
   // 迁移码:导出库中 github 来源的仓库简写集合;导入即逐仓安装(局部失败不中断)
@@ -457,6 +469,81 @@ export function createApp(): express.Express {
     res.json(await importProfile(bundle));
   }));
 
+  // ---- 软件更新(GitHub Releases 检查/下载;设置弹窗、侧栏横幅与 ssw update 共用)----
+  // 状态:当前版本 + 自动更新配置 + 本进程最近一次检查结果 + 下载任务;不发网络请求
+  app.get('/api/update/status', h(async (_req, res) => {
+    res.json({
+      current: VERSION,
+      config: await readUpdateConfig(),
+      last: getLastUpdateCheck(),
+      download: getUpdateDownload(),
+    });
+  }));
+
+  // 手动检查:强制跳过缓存(用户点「检查更新」就是要看当下的)
+  app.post('/api/update/check', h(async (_req, res) => {
+    res.json(await checkForUpdate({ force: true }));
+  }));
+
+  app.put('/api/update/config', h(async (req, res) => {
+    const { autoCheck, autoDownload } = req.body ?? {};
+    for (const [k, v] of Object.entries({ autoCheck, autoDownload })) {
+      if (v !== undefined && typeof v !== 'boolean') {
+        return void res.status(400).json({ error: `${k} 必须是布尔值` });
+      }
+    }
+    res.json(await saveUpdateConfig({ autoCheck, autoDownload }));
+  }));
+
+  // 启动下载:异步执行(202 立即返回),进度走 /api/update/status 与 /api/progress 轮询;
+  // 同一文件已完整下载过则幂等返回 already(不重复拉 100+MB)
+  app.post('/api/update/download', h(async (_req, res) => {
+    const running = getUpdateDownload();
+    if (running && !running.done) return void res.status(409).json({ error: '已有下载任务进行中' });
+    if (running?.done && !running.error && running.file && fsSync.existsSync(running.file)) {
+      return void res.json({ started: false, already: true, file: running.file });
+    }
+    const last = getLastUpdateCheck();
+    const check = last?.hasUpdate ? last : await checkForUpdate();
+    if (!check.ok) return void res.status(502).json({ error: check.message ?? '检查更新失败' });
+    if (!check.hasUpdate) return void res.status(400).json({ error: '当前已是最新版本' });
+    if (!check.asset) {
+      return void res.status(400).json({ error: '最新版本没有匹配当前平台的安装包,请到发布页手动下载' });
+    }
+    const asset = check.asset;
+    // 失败落在 download job 的 error 字段,前端轮询可见
+    void downloadUpdate(asset).catch(() => {});
+    res.status(202).json({ started: true, asset });
+  }));
+
+  // 打开发布页/下载目录:目标由服务端解析(只允许本项目 releases URL 与数据目录下的下载目录),
+  // 不接收前端任意 URL/路径
+  app.post('/api/update/open', h(async (req, res) => {
+    const { target } = req.body ?? {};
+    if (target === 'release') {
+      const last = getLastUpdateCheck() ?? (await checkForUpdate());
+      const url = last.releaseUrl;
+      if (!url || !/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/releases\//.test(url)) {
+        return void res.status(400).json({ error: '尚无发布页地址(请先检查更新)' });
+      }
+      await openExternal(url);
+      return void res.json({ opened: true, url });
+    }
+    if (target === 'download') {
+      const file = getUpdateDownload()?.file;
+      if (!file || !fsSync.existsSync(file)) {
+        return void res.status(400).json({ error: '还没有已完成的下载' });
+      }
+      const dir = path.dirname(file);
+      if (path.resolve(dir) !== path.resolve(downloadsDir())) {
+        return void res.status(400).json({ error: '非法下载路径' });
+      }
+      await openExternal(dir);
+      return void res.json({ opened: true, dir });
+    }
+    res.status(400).json({ error: "target 只能是 'release' 或 'download'" });
+  }));
+
   // 托管前端单页应用
   app.use(express.static(resolvePublicDir()));
 
@@ -466,8 +553,9 @@ export function createApp(): express.Express {
       err instanceof LibraryError ? err.message :
       err instanceof McpError ? err.message :
       err instanceof AiError ? err.message :
+      err instanceof UpdateError ? err.message :
       err instanceof Error ? err.message : String(err);
-    const status = err instanceof LibraryError || err instanceof McpError || err instanceof AiError ? 400 : 500;
+    const status = err instanceof LibraryError || err instanceof McpError || err instanceof AiError || err instanceof UpdateError ? 400 : 500;
     res.status(status).json({ error: msg });
   });
 

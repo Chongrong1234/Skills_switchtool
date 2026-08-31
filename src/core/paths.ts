@@ -37,6 +37,16 @@ export function aiFile(): string {
   return path.join(sswHome(), 'ai.json');
 }
 
+/** 自动更新配置(autoCheck/autoDownload),见 core/update.ts */
+export function updateFile(): string {
+  return path.join(sswHome(), 'update.json');
+}
+
+/** 更新安装包的下载目录(不建进骨架:只在真正下载时创建) */
+export function downloadsDir(): string {
+  return path.join(sswHome(), 'downloads');
+}
+
 export function snapshotsDir(): string {
   return path.join(sswHome(), 'snapshots');
 }

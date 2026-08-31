@@ -5,6 +5,7 @@
  */
 import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -469,7 +470,7 @@ describe('ssw CLI', () => {
     const report = JSON.parse(ok.stdout);
     expect(report.ok).toBe(true);
     expect(typeof report.version).toBe('string');
-    expect(report.checks.map((c: { id: string }) => c.id)).toEqual(['ssw-home', 'git', 'agents', 'registry', 'projects', 'mcps', 'global']);
+    expect(report.checks.map((c: { id: string }) => c.id)).toEqual(['ssw-home', 'git', 'agents', 'registry', 'projects', 'mcps', 'global', 'update']);
     expect(report.stats).toEqual({ skills: 0, mcps: 0, projects: 0, activeProject: null });
 
     // 损坏 registry.json → error 级,退出码非零,人类输出带 ✗ 与修复建议
@@ -478,5 +479,58 @@ describe('ssw CLI', () => {
     expect(bad.code).not.toBe(0);
     expect(bad.stdout).toContain('✗');
     expect(bad.stdout).toContain('建议');
+  });
+
+  it('update:假 release(SSW_UPDATE_API 注入本地服务)发现新版本;--auto-check 写配置', async () => {
+    // 本地 HTTP 服务冒充 GitHub releases API,不打真实外网
+    const srv = http.createServer((_req, res) => {
+      res.setHeader('content-type', 'application/json');
+      res.end(
+        JSON.stringify({
+          tag_name: 'v99.0.0',
+          html_url: 'https://github.com/Chongrong1234/Skills_switchtool/releases/tag/v99.0.0',
+          published_at: '2026-09-01T00:00:00Z',
+          assets: [
+            {
+              name: 'Skills.SwitchTool-99.0.0.AppImage',
+              browser_download_url: 'https://fake.test/x.AppImage',
+              size: 1024,
+            },
+          ],
+        }),
+      );
+    });
+    await new Promise<void>((resolve) => srv.listen(0, '127.0.0.1', () => resolve()));
+    const addr = srv.address();
+    const port = typeof addr === 'object' && addr ? addr.port : 0;
+    try {
+      const env = { SSW_UPDATE_API: `http://127.0.0.1:${port}/latest` };
+      // 检查:发现新版本,输出引导 --download / --open
+      const r = await cliWithEnv(env, 'update');
+      expect(r.code).toBe(0);
+      expect(r.stdout).toContain('发现新版本: v99.0.0');
+      expect(r.stdout).toContain('ssw update --download');
+
+      // --json:结构化结果
+      const j = await cliWithEnv(env, 'update', '--json');
+      expect(j.code).toBe(0);
+      const parsed = JSON.parse(j.stdout);
+      expect(parsed.hasUpdate).toBe(true);
+      expect(parsed.latest).toBe('99.0.0');
+
+      // 配置开关:纯本地读写,落盘 update.json
+      const cfg = await cliWithEnv(env, 'update', '--auto-check', 'off');
+      expect(cfg.code).toBe(0);
+      expect(cfg.stdout).toContain('自动检查 关');
+      const saved = JSON.parse(await fs.readFile(path.join(sswHome, 'update.json'), 'utf8'));
+      expect(saved).toEqual({ autoCheck: false, autoDownload: false });
+
+      // 非法开关值报错、退出码非零
+      const badVal = await cliWithEnv(env, 'update', '--auto-check', 'maybe');
+      expect(badVal.code).not.toBe(0);
+      expect(badVal.stderr).toContain('on 或 off');
+    } finally {
+      srv.close();
+    }
   });
 });

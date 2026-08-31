@@ -4,7 +4,7 @@
  * 主视图 = 项目列表(仿 cc-switch 的切换面板):↑↓ 移动光标,Enter 切换并 apply;
  * n 新建项目(依次询问名称/路径/agents/模式/开发需求——与 GUI 新建项目弹窗同口径,填了需求则 AI 推荐并整体绑定);
  * x 删除项目档案(y 二次确认;只删档案不动磁盘文件,同 CLI project remove);
- * a apply / u unapply / r 回滚 / i AI 推荐 / s 技能库 / m MCP 库 / g 全局共享 / c 推荐库 / d 环境自检 / q 或 Ctrl-C 退出,Esc 返回项目视图。
+ * a apply / u unapply / r 回滚 / i AI 推荐 / s 技能库 / m MCP 库 / g 全局共享 / c 推荐库 / d 环境自检 / U 软件更新 / q 或 Ctrl-C 退出,Esc 返回项目视图。
  * 全局共享视图里 a/u/r 作用于全局(用户级)物化;推荐库视图内 c 循环切换分类过滤、k 循环切换类型过滤(全部 → 仅 skills → 仅 MCP,
  * skills 与 MCP 的浏览/下载分流);
  * AI 推荐视图(i 键输入开发需求后进入)内 a 把推荐全部并入光标项目;推荐含本地技能库与 GitHub 联网两路
@@ -28,9 +28,16 @@ import { listMcps } from './core/mcps.js';
 import { createProject, deleteProject, listProjects, setActiveProject, setProjectSkills } from './core/projects.js';
 import { rollback } from './core/snapshot.js';
 import { runDoctor, type DoctorReport } from './core/doctor.js';
+import {
+  checkForUpdate,
+  readUpdateConfig,
+  type UpdateCheckResult,
+  type UpdateConfig,
+} from './core/update.js';
 import type { McpEntry, Project, SkillEntry } from './core/types.js';
+import { VERSION } from './version.js';
 
-type View = 'projects' | 'skills' | 'mcps' | 'global' | 'catalog' | 'doctor' | 'ai';
+type View = 'projects' | 'skills' | 'mcps' | 'global' | 'catalog' | 'doctor' | 'ai' | 'update';
 
 interface State {
   view: View;
@@ -53,6 +60,10 @@ interface State {
   doctor: DoctorReport | null;
   /** AI 推荐结果(i 键触发;绑定作用的目标项目随结果一起存) */
   aiRec: { projectId: string; items: AiRecommendedSkill[]; github: AiGithubRecommendation[]; message?: string; githubMessage?: string } | null;
+  /** 软件更新检查结果(null = 尚未检查;U 键强制检查) */
+  updateCheck: UpdateCheckResult | null;
+  /** 自动更新配置(reload 时重读,视图里只展示;改配置走 CLI ssw update --auto-*) */
+  updateCfg: UpdateConfig;
 }
 
 const INV = '\x1b[7m'; // 反色(光标行)
@@ -81,6 +92,8 @@ export async function startTui(): Promise<void> {
     catalogKind: '',
     doctor: null,
     aiRec: null,
+    updateCheck: null,
+    updateCfg: { autoCheck: true, autoDownload: false },
   };
 
   async function reload(): Promise<void> {
@@ -94,6 +107,7 @@ export async function startTui(): Promise<void> {
     state.mcps = await listMcps();
     state.globalProfile = await readGlobal();
     state.catalog = await listCatalogWithInstalled();
+    state.updateCfg = await readUpdateConfig();
   }
 
   function render(): void {
@@ -124,7 +138,7 @@ export async function startTui(): Promise<void> {
         lines.push(`${DIM}${cut(summary, cols - 2)}${RESET}`);
       }
       lines.push('');
-      lines.push(`${DIM}↑↓ 移动  Enter 切换并 apply  n 新建  x 删除  a apply  u unapply  r 回滚  i AI推荐  s 技能库  m MCP库  g 全局共享  c 推荐库  d 自检  q 退出${RESET}`);
+      lines.push(`${DIM}↑↓ 移动  Enter 切换并 apply  n 新建  x 删除  a apply  u unapply  r 回滚  i AI推荐  s 技能库  m MCP库  g 全局共享  c 推荐库  d 自检  U 更新  q 退出${RESET}`);
     } else if (state.view === 'skills') {
       lines.push(`技能库(${state.skills.length}):`);
       lines.push('');
@@ -234,6 +248,35 @@ export async function startTui(): Promise<void> {
       }
       lines.push('');
       lines.push(`${DIM}a 全部绑定到项目  Esc 返回项目视图  q 退出${RESET}`);
+    } else if (state.view === 'update') {
+      lines.push('软件更新(对照 GitHub Releases):');
+      lines.push('');
+      lines.push(
+        `当前版本: v${VERSION}   自动检查: ${state.updateCfg.autoCheck ? '开' : '关'}   自动下载: ${state.updateCfg.autoDownload ? '开' : '关'}`,
+      );
+      lines.push('');
+      const u = state.updateCheck;
+      if (!u) {
+        lines.push('(按 U 检查更新)');
+      } else if (!u.ok) {
+        lines.push(`✗ ${cut(u.message ?? '检查失败', cols - 4)}`);
+      } else if (!u.hasUpdate) {
+        lines.push(`✓ 已是最新版本(v${u.current};最新 release: ${u.tag}${u.cached ? ',缓存' : ''})`);
+      } else {
+        lines.push(`${BOLD}发现新版本: v${u.latest}${RESET}(发布于 ${u.publishedAt?.slice(0, 10) || '-'})`);
+        if (u.releaseUrl) lines.push(`发布页: ${u.releaseUrl}`);
+        if (u.asset) {
+          lines.push(`安装包: ${u.asset.name}(${(u.asset.size / 1048576).toFixed(1)} MB)`);
+        } else {
+          lines.push('(没有匹配当前平台的安装包,请到发布页手动下载)');
+        }
+        lines.push('');
+        // 面板里不做大文件下载:指向 CLI(有进度条),配置修改也走 CLI
+        lines.push('下载安装: ssw update --download;打开发布页: ssw update --open');
+        lines.push(`自动下载开关: ssw update --auto-download on(当前${state.updateCfg.autoDownload ? '开' : '关'})`);
+      }
+      lines.push('');
+      lines.push(`${DIM}U 重新检查  Esc 返回项目视图  q 退出${RESET}`);
     }
 
     if (state.message) {
@@ -350,6 +393,18 @@ export async function startTui(): Promise<void> {
         }
         return;
       }
+      if (state.view === 'update') {
+        // 更新视图:U 强制重查(跳过 6h 缓存);下载/配置走 CLI,面板只做检查与提示
+        if (key === 'U') {
+          void run(async () => {
+            const r = await checkForUpdate({ force: true });
+            state.updateCheck = r;
+            if (!r.ok) return `✗ ${r.message}`;
+            return r.hasUpdate ? `发现新版本 v${r.latest}(下载: ssw update --download)` : '✓ 已是最新版本';
+          });
+        }
+        return;
+      }
       if (state.view !== 'projects') return; // 技能库/MCP 库为只读视图,只响应 Esc/q
       switch (key) {
         case '\u001b[A': // ↑
@@ -386,6 +441,16 @@ export async function startTui(): Promise<void> {
           void run(async () => {
             state.doctor = await runDoctor();
             return state.doctor.ok ? '✓ 自检通过' : '✗ 自检发现 error 级问题,见上方列表';
+          });
+          break;
+        case 'U': // 进入软件更新视图并立即强制检查(小写 u 已是 unapply,大写 U 给更新)
+          state.view = 'update';
+          state.message = '';
+          void run(async () => {
+            const r = await checkForUpdate({ force: true });
+            state.updateCheck = r;
+            if (!r.ok) return `✗ ${r.message}`;
+            return r.hasUpdate ? `发现新版本 v${r.latest}(下载: ssw update --download)` : '✓ 已是最新版本';
           });
           break;
         case 'n': { // 新建项目:readline 依次询问,字段与 GUI 新建项目弹窗同口径(名称/路径/agents/模式/开发需求)

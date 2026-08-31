@@ -3,6 +3,24 @@
 本项目遵循语义化版本;版本号单一来源是 `package.json`。
 发布走 `npm run release`(干净工作区检查 → 全量测试 → 打 tag → 推送,tag 触发三平台 Release 构建)。
 
+## v1.5.0(2026-09-01)
+
+自动更新系统:对照 GitHub Releases 检查新版本,用户可手动下载安装包或配置自动更新——
+
+- **检查更新**(`src/core/update.ts`):版本比较只看 tag 的 X.Y.Z 数字段(解析不了按更旧,坏 tag 不误报);6h 磁盘缓存(`cache/update-latest.json`),手动检查强制刷新;并发调用共享同一次在途请求;断网/限流/解析失败一律降级 `{ ok:false, message }`,绝不抛异常;API 地址可用 `SSW_UPDATE_API` 覆盖(测试注入)
+- **按平台挑安装包**(`pickAsset`):win → `Setup*.exe`,mac → 按 arch 匹配 arm64/非 arm64 dmg,linux → AppImage
+- **下载**:流式写 `.part` 再原子改名(不留半截文件),落盘 `<数据目录>/downloads/` 并置可执行位;进度并入 `GET /api/progress`(GUI 进度条零改动复用);同一文件已完整下载过幂等跳过;在途任务拒绝并发
+- **桌面 GUI**:设置弹窗新增「软件更新」区(当前版本/检查更新/下载进度条/打开下载目录/自动检查+自动下载开关);侧栏顶部浮现更新横幅(发现新版本或下载完成时,点击开设置);桌面 App 启动时按配置自动检查(开了自动下载则后台拉包),全静默不影响启动
+- **CLI `ssw update`**:不带选项=立即检查;`--download` 下载安装包(TTY 进度条走 stderr);`--open` 浏览器打开发布页;`--auto-check|--auto-download on|off` 读写配置(`update.json`,autoCheck 默认开、autoDownload 默认关)
+- **REST**:`/api/update/status|check|config|download|open`;open 目标由服务端解析,只放行本项目 releases URL 与下载目录;资产 URL 强制 https;`openExternal` 只接受 https URL/绝对路径
+- **TUI**:项目视图 `U` 键进更新视图(强制检查;下载与配置指向 CLI)
+- doctor 数据文件健康检查纳入 `update.json`(四 → 五个)
+
+顺带修复与增强:
+
+- **github 安装合集子目录兜底**:未指定 `--subdir` 且根级扫描落空时,自动探测 `skills/`、`.agents/skills`、`.claude/skills` 常见合集子目录(`registerSkillsWithFallback`)——联网推荐命中的合集仓库多把 skills 收在子目录,只扫根级曾误报「仓库中未找到合法 skill」
+- **git 进度解析语言无关化**:git 输出随界面语言本地化(zh_CN 是「接收对象中」),进度正则不再限定英文阶段名,中文系统下 GUI 进度条与错误摘要恢复正常;`parseProgressSegment`/`summarizeStderr` 导出供测试
+
 ## v1.4.9(2026-08-31)
 
 新增 9 个主流 agent 框架适配器(10 → 19 家;目录约定全部来自各官方文档逐一核实,不靠猜):

@@ -1,7 +1,7 @@
 /**
  * doctor 环境自检:给"装不上 / 不生效"类问题一个自助排障入口。
  * 检查项:数据目录可写、git 可用(GitHub 安装链路的硬依赖)、agent 检测、
- * 四个 JSON 数据文件(registry/projects/mcps/global)的健康度。
+ * 五个 JSON 数据文件(registry/projects/mcps/global/update)的健康度。
  *
  * 设计决策:
  * - 只读检测为主;唯一副作用是 ensureSkeleton() 建目录骨架,与正常启动行为一致。
@@ -22,6 +22,7 @@ import {
   projectsFile,
   registryFile,
   sswHome,
+  updateFile,
 } from './paths.js';
 import { listProjects } from './projects.js';
 import { readRegistry } from './registry.js';
@@ -147,11 +148,12 @@ export async function runDoctor(): Promise<DoctorReport> {
         },
   );
 
-  // 四个 JSON 数据文件健康度(损坏时运行时会容错成空,这里负责暴露)
+  // 五个 JSON 数据文件健康度(损坏时运行时会容错成空,这里负责暴露)
   checks.push(await checkJsonFile('registry', registryFile(), 'skills 注册表 registry.json'));
   checks.push(await checkJsonFile('projects', projectsFile(), '项目档案 projects.json'));
   checks.push(await checkJsonFile('mcps', mcpsFile(), 'MCP 注册表 mcps.json'));
   checks.push(await checkJsonFile('global', globalFile(), '全局共享档案 global.json'));
+  checks.push(await checkJsonFile('update', updateFile(), '自动更新配置 update.json'));
 
   // 统计(读取走容错路径,与运行时一致)
   const [skills, mcps, pdata] = await Promise.all([readRegistry(), listMcps(), listProjects()]);

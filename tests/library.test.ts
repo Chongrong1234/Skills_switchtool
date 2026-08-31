@@ -10,8 +10,11 @@ import {
   installFromGithub,
   installFromLocal,
   parseFrontmatter,
+  parseProgressSegment,
+  registerSkillsWithFallback,
   sameRealPath,
   skillDirOf,
+  summarizeStderr,
   uninstall,
   updateSkill,
   validateSkillDir,
@@ -244,5 +247,63 @@ describe('library', () => {
     expect(await sameRealPath(dir, path.join(tmp, 'real-dir', '..', 'real-dir'))).toBe(true);
     // 不同位置
     expect(await sameRealPath(dir, path.join(tmp, 'other'))).toBe(false);
+  });
+
+  it('parseProgressSegment 解析本地化(中文)阶段名:git 界面语言为 zh 时进度条才有百分比', () => {
+    // 回归:旧正则限定 [A-Za-z] 阶段名,中文系统("接收对象中")永远解析不出 pct,GUI 无进度条
+    const zh = parseProgressSegment('remote: 接收对象中:   8% (31/377)\r');
+    expect(zh).toMatchObject({ phase: '接收对象中', pct: 8, rest: '(31/377)', done: false });
+    const zhDone = parseProgressSegment('处理 delta 中: 100% (52/52), 完成.');
+    expect(zhDone).toMatchObject({ phase: '处理 delta 中', pct: 100, done: true });
+    expect(zhDone?.rest).not.toContain('完成');
+    // 英文输出照常解析
+    const en = parseProgressSegment('Receiving objects:  45% (45/100), 1.0 MiB | 2.0 MiB/s');
+    expect(en).toMatchObject({ phase: 'Receiving objects', pct: 45 });
+    // 非进度行(Cloning into... / 正克隆到...)不解析百分比
+    expect(parseProgressSegment("Cloning into '/tmp/x'...")?.phase).toBeNull();
+    expect(parseProgressSegment("正克隆到 '/tmp/x'...")?.phase).toBeNull();
+    expect(parseProgressSegment('   ')).toBeNull();
+  });
+
+  it('summarizeStderr 剥掉本地化进度行,保留真实错误原因', () => {
+    const stderr = [
+      "正克隆到 '/tmp/x'...",
+      '接收对象中:  50% (50/100), 1.0 MiB | 2.0 MiB/s',
+      '接收对象中: 100% (100/100), 完成.',
+      "致命错误: 无法访问 'https://github.com/o/r.git/':Failed to connect",
+    ].join('\r\n');
+    const summary = summarizeStderr(stderr);
+    expect(summary).toContain('致命错误');
+    expect(summary).not.toContain('接收对象中');
+  });
+
+  /** 在伪仓库目录里写一个合法 skill:<repoDir>/<sub>/<name>/SKILL.md */
+  async function writeFakeSkill(repoDir: string, sub: string, name: string): Promise<void> {
+    const dir = path.join(repoDir, sub, name);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, 'SKILL.md'), `---\nname: ${name}\ndescription: d\n---\n`, 'utf8');
+  }
+
+  it('registerSkillsWithFallback 根级落空时自动探测 skills/ 等合集子目录', async () => {
+    // 模拟 addyosmani/agent-skills 布局:skills 收在 skills/ 子目录,根级无 SKILL.md
+    const repoDir = path.join(tmp, 'fake-repo');
+    await writeFakeSkill(repoDir, 'skills', 'code-review');
+    await writeFakeSkill(repoDir, 'skills', 'debugging');
+    const found = await registerSkillsWithFallback(repoDir, 'o/r', 'o/r');
+    expect(found.map((s) => s.id).sort()).toEqual(['o/r:skills/code-review', 'o/r:skills/debugging']);
+  });
+
+  it('registerSkillsWithFallback 根级有 skill 时不触发兜底(不重复登记子目录)', async () => {
+    const repoDir = path.join(tmp, 'fake-repo');
+    await writeFakeSkill(repoDir, '', 'root-skill'); // <repoDir>/root-skill/SKILL.md
+    await writeFakeSkill(repoDir, 'skills', 'nested-skill');
+    const found = await registerSkillsWithFallback(repoDir, 'o/r2', 'o/r2');
+    expect(found.map((s) => s.id)).toEqual(['o/r2:root-skill']);
+  });
+
+  it('registerSkillsWithFallback 显式 subdir 不兜底:子目录不存在直接报错', async () => {
+    const repoDir = path.join(tmp, 'fake-repo');
+    await writeFakeSkill(repoDir, 'skills', 'code-review');
+    await expect(registerSkillsWithFallback(repoDir, 'o/r3', 'o/r3', 'nope')).rejects.toThrow('不存在子目录');
   });
 });

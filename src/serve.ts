@@ -3,10 +3,13 @@
  * 供 Electron 主进程(electron/main.mjs)进程内启动,窗口加载该本机地址。
  * 启动时自动把本机各 agent 用户级 skills 目录里已有的 skills 收养进中央库(幂等、只读源目录),
  * 让用户打开 App 就能在技能库看到本机已配置的 skills;失败静默降级,不影响服务启动。
+ * listen 后按 update.json 配置做软件更新自检(autoCheck;开了 autoDownload 则后台下载安装包),
+ * 异步 fire-and-forget,失败静默,不拖慢启动。
  */
 import type { Server } from 'node:http';
 import { adoptFromAllAgents } from './core/library.js';
 import { ensureSkeleton } from './core/paths.js';
+import { autoUpdateOnStartup } from './core/update.js';
 import { createApp } from './server.js';
 
 /**
@@ -27,7 +30,11 @@ export async function startServer(port: number, host?: string): Promise<Server> 
   return new Promise((resolve, reject) => {
     // express 的 listen 重载不接受 undefined 的 hostname,按有无 host 分开调用
     let server: Server;
-    const onReady = () => resolve(server);
+    const onReady = () => {
+      // 启动后异步检查更新(仅 autoCheck 开启时实际发请求;失败静默)
+      void autoUpdateOnStartup().catch(() => {});
+      resolve(server);
+    };
     server = host ? app.listen(port, host, onReady) : app.listen(port, onReady);
     server.on('error', reject);
   });

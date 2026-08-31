@@ -29,9 +29,9 @@ describe('runDoctor', () => {
     const r = await runDoctor();
     expect(r.sswHome).toBe(tmp);
     expect(r.ok).toBe(true);
-    expect(r.checks.map((c) => c.id)).toEqual(['ssw-home', 'git', 'agents', 'registry', 'projects', 'mcps', 'global']);
+    expect(r.checks.map((c) => c.id)).toEqual(['ssw-home', 'git', 'agents', 'registry', 'projects', 'mcps', 'global', 'update']);
     // 数据文件尚不存在 → ok 级并标注首次使用(不是损坏)
-    for (const id of ['registry', 'projects', 'mcps', 'global']) {
+    for (const id of ['registry', 'projects', 'mcps', 'global', 'update']) {
       const c = r.checks.find((x) => x.id === id)!;
       expect(c.level).toBe('ok');
       expect(c.label).toContain('首次使用');

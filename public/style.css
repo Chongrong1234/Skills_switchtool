@@ -247,6 +247,20 @@ body {
 @keyframes spin { to { transform: rotate(360deg); } }
 .loading-text { text-align: center; color: var(--text-dim); font-size: 12px; }
 
+/* ---------- 更新横幅(侧栏:发现新版本/已下载时出现,点击打开设置弹窗) ---------- */
+.update-banner {
+  border: 1px solid var(--accent);
+  background: rgba(79, 140, 255, 0.12);
+  color: var(--accent-hover);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  font-size: 12px;
+  text-align: center;
+  cursor: pointer;
+  word-break: break-all;
+}
+.update-banner:hover { background: rgba(79, 140, 255, 0.22); }
+
 /* ---------- toast ---------- */
 #toast-root { position: fixed; top: 18px; right: 18px; z-index: 200; display: flex; flex-direction: column; gap: 8px; }
 .toast {
