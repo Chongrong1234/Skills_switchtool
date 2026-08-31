@@ -4,7 +4,7 @@
 
 ## 项目概述
 
-**Skills SwitchTool**(`skills-switchtool`,v1.4.7):项目中心化的 Agent Skills 管理工具。交互模式仿照 cc-switch:**中央存储 + 切换 + 写入目标工具配置位置 + 快照可回滚**。
+**Skills SwitchTool**(`skills-switchtool`,v1.4.8):项目中心化的 Agent Skills 管理工具。交互模式仿照 cc-switch:**中央存储 + 切换 + 写入目标工具配置位置 + 快照可回滚**。
 
 核心概念:
 
@@ -13,7 +13,7 @@
 - **apply = 物化**:把项目技能集写入各 agent 的项目级 skills 目录(claude-code→`.claude/skills`、kimi-code→`.kimi-code/skills`、cursor→`.cursor/skills`、codex→`.codex/skills`、gemini-cli→`.gemini/skills`、windsurf→`.windsurf/skills`、roo-code→`.roo/skills`;agents/copilot/opencode 三家项目级都指向通用 `.agents/skills`——Agent Skills 开放规范的互操作路径,同时启用时幂等跳过)。默认 symlink(库改动即时生效),可选 copy;symlink 失败自动降级 copy 并告警。同名冲突的既有内容先移入快照再覆盖。MCP 服务集**合并**写入各 agent 的项目级配置(claude-code→`.mcp.json`,kimi-code→`.kimi-code/mcp.json`,cursor→`.cursor/mcp.json`,codex→`.codex/config.toml` 的 `[mcp_servers.*]` 段):保留用户已有条目、同名覆盖,已存在的配置文件先整体进快照再写。
 - **全局(用户级)共享应用**(`src/core/global.ts`):把选定 skills 物化到各 agent 的用户级 skills 目录(`~/.claude/skills` 等,即适配器的 `userSkillsDir()`),一次配置、该 agent 的所有项目共享。档案存 `global.json`,快照挂在固定名 `__global__` 下,复用 apply.ts 的物化/移除原语与 snapshot.rollback。**MCP 是项目级概念,全局共享只管 skills**。CLI(`ssw global`)、REST(`/api/global*`)、桌面 GUI(「全局共享」视图)、TUI(g 键)均已接入。
 - **配置库导出/导入**(`src/core/profile.ts`):`ssw-profile@1` 单文件 bundle(skills 注册表 + MCP + 项目档案 + 全局档案 + local 技能实体 base64),跨机器/跨平台整体搬家;导入幂等——github 按仓库去重重克隆、local 文件落库带路径穿越防护、项目 id 冲突换新 id、`activeProjectId` 与全局档案仅在本机空缺时采用。
-- **收养既有 skills**(library.ts `adoptFromAgent`):把 agent 用户级/项目级 skills 目录里已存在的 skills 收进中央库(跳过指向库内的 symlink 与同名条目),先纳管再统一分发。
+- **收养既有 skills**(library.ts `adoptFromAgent` / `adoptFromAllAgents`):把 agent 用户级/项目级 skills 目录里已存在的 skills 收进中央库(跳过指向库内的 symlink 与同名条目),先纳管再统一分发;`adoptFromAllAgents` 一键扫描所有 agent(同名跨 agent 去重、同目录按 realpath 只扫一次、未安装/无目录记 skippedAgents 不报错);桌面 App 启动时(startServer)自动做用户级收养,打开即在技能库看到本机已配置的 skills。
 - **AI 技能推荐**(`src/core/ai.ts`):填开发需求,模型(OpenAI 兼容 chat/completions)读本地技能库给出初步推荐供勾选绑定,**新建项目弹窗与项目详情页均可多次调用**;同时**联网搜 GitHub**——模型输出 githubKeywords(没给则用需求里的英文词兜底),按 `topic:agent-skills <关键词>` 搜仓库(复用 recommend 的 24h 缓存),去重、排除已入库、按 star 降序,可一键安装入库;本地与联网两路成败互相隔离(库空跳过模型只走联网;模型挂了仍有 GitHub 结果);配置存 `ai.json`(baseUrl/model/apiKey,预设 Kimi/DeepSeek/OpenAI/OpenRouter,baseUrl 可填中转站);未配置 key/断网/解析失败一律降级为 `{ items: [], github: [], message }` 不抛异常;CLI(`ssw ai`)、REST(`/api/ai/*`)、桌面 GUI(新建项目弹窗 + 项目详情「AI 推荐」区 + 设置弹窗)、TUI(i 键)均已接入。
 - **快照回滚**:每次 apply 前在 `snapshots/<projectId>/` 建快照(全局共享用 `snapshots/__global__/`),每项目保留最近 5 份,`rollback` 逆序还原最近一次(skills 与 MCP 同一份快照,一起还原)。
 - **热度排序选配**(`src/core/rank.ts`):给项目/全局共享选技能时,常用的排前面。三个信号加权:使用次数(绑定即计——`registry.markSkillsUsed` 挂在 updateProject/updateGlobal 的技能集差集上,只增不减,每次 +10)> 项目分类匹配(技术栈 + 项目名分词命中 skill 的 name/description/tags,每个 +6;`projectRankContext` 复用 recommend 的检测/分词口径)> 仓库 stars(安装/更新时 `fetchRepoStars` 采集,软失败;log10 压量纲 ×4)。`rankSkills` 稳定降序;REST `GET /api/skills?rank=1[&forProject=id]`(不带 rank 保持注册表原顺序,向后兼容)、GUI 两个"从库中添加"弹窗、AI 推荐载荷(stars/uses 作相关度 tie-break)均已接入;CLI `skill list` 与 TUI 技能库视图带 ★/用N 热度标记;重装/更新 skill 时 upsert 保留 useCount/stars 统计。
@@ -63,7 +63,10 @@ src/
                          #   local→复制、卸载、更新、initSkill 脚手架(可选 content:粘贴的完整 SKILL.md
                          #   剥原 frontmatter 重新生成,name/description 可由其兜底,显式参数优先);
                          #   adoptFromAgent:收养 agent 用户级/项目级目录里既有的 skills 进库
-                         #   (跳过指向库内的 symlink 与同名条目,installFromLocal 的"已在库中"按跳过处理);
+                         #   (跳过指向库内的 symlink 与同名条目,installFromLocal 的"已在库中"按跳过处理;
+                         #   扫描循环抽为 adoptFromDir 供复用);adoptFromAllAgents:一键收养所有 agent
+                         #   (user 级按 detect 过滤,目录不存在/同目录复扫记 skippedAgents 不报错,
+                         #   同名跨 agent 去重,返回 scanned 分目录明细 + 扁平汇总);
                          #   git 调用统一走 runGit(spawn 流式读 stderr):120s 超时(SSW_GIT_TIMEOUT_MS 覆盖)
                          #   + GIT_TERMINAL_PROMPT=0(禁交互式凭据提示,防 GUI/服务进程里看不到提示而永久"安装中")
                          #   + clone/pull --progress 进度段解析后兵分两路:TTY 渲染进度条到 stderr
@@ -162,11 +165,14 @@ src/
                          #   GET /api/catalog[?category=&q=&kind=skill|mcp]:推荐库,kind 把 skills 与 MCP 分流;
                          #   GET /api/progress:git clone/pull 任务进度(前端进度条轮询);
                          #   GET /api/skills?rank=1[&forProject=id] 热度排序(不带 rank 保持原顺序);
-                         #   POST /api/skills/adopt 收养 agent 目录既有 skills;
+                         #   POST /api/skills/adopt 收养 agent 目录既有 skills;{ all: true } 一次
+                         #   收养所有 agent(缺省 user 级,返回 scanned/skippedAgents 分明细);
                          #   /api/ai/config GET(掩码)/PUT、/api/ai/test(保存前可带表单值先测)、
                          #   /api/ai/recommend(requirement 必填,降级不抛错);
                          #   GET /api/doctor:环境自检报告(带 version,GUI 设置弹窗数据源)
-  serve.ts               # startServer(port, host?) 启动函数:仅 Electron 主进程进程内调用(127.0.0.1+随机端口)
+  serve.ts               # startServer(port, host?) 启动函数:仅 Electron 主进程进程内调用(127.0.0.1+随机端口);
+                         #   listen 前自动 adoptFromAllAgents(user 级)——打开 App 即在技能库看到本机
+                         #   各 agent 已配置的 skills;失败静默降级不影响启动
   cli.ts                 # ssw/skills 入口:全部子命令;id|name 寻址(id 精确优先,name 歧义列候选报错;
                          #   项目与 skill 都支持,skill 用名称简写免敲 local:x 长 id);
                          #   --json;无参数且 TTY 时动态 import tui.js 进终端面板,非 TTY 打印帮助;
@@ -180,7 +186,8 @@ src/
                          #   catalog categories 分类清单(count/skills/mcps 统计,--category 的 id 来源);
                          #   skill init [--name --desc] [--content 文本|--file 路径](粘贴现成 SKILL.md 均可);
                          #   skill list 带 ★stars/用N次 热度标记;
-                         #   skill adopt --agent <id> [--user|--path];global show/bind/agents/apply/unapply/rollback;
+                         #   skill adopt --agent <id> | --all(一次收养所有 agent,分目录输出)[--user|--path];
+                         #   global show/bind/agents/apply/unapply/rollback;
                          #   ai config [--preset/--base-url/--model/--api-key](不带选项=查看+预设清单)/ test /
                          #   recommend "<需求>" [--bind 项目](并入技能集),输出含 GitHub 联网推荐段;
                          #   project create --ai "<需求>" 创建即推荐并自动绑定;本地/联网两路都无结果退出码才非零;
@@ -204,7 +211,8 @@ public/                  # 原生单页应用(index.html / app.js / style.css),�
                          #   重绘后恢复;runAiRecommend+renderAiBox 共享渲染:本地推荐勾选绑定,
                          #   GitHub 联网推荐一键安装并绑定,已绑定/已入库禁用态);
                          #   设置弹窗含 AI 配置(预设/baseUrl/模型/Key + 测连);
-                         #   MCP 服务页每个 server 带「设置」按钮,弹窗编辑配置(名称锁定,POST /api/mcps 同名 upsert 保存)
+                         #   MCP 服务页每个 server 带「设置」按钮,弹窗编辑配置(名称锁定,POST /api/mcps 同名 upsert 保存);
+                         #   收养弹窗支持选「全部 agent」(选中自动切用户级,按 agent 分组展示结果)
 scripts/                 # make-icon.mjs(生成图标)、build-cli.mjs(esbuild 打 CLI 单文件,注入 createRequire + __SSW_VERSION__)、
                          #   release.mjs(npm run release:干净工作区检查 → 全量测试 → 打 tag → push main+tag)
 tests/                   # vitest,每文件对应一个 core 模块 + platform(Windows 专项)+ server(API)+ cli(端到端)
@@ -233,7 +241,7 @@ electron-builder.yml     # 打包配置:Linux AppImage + Windows NSIS(中文安�
 - 测试文件在 `tests/*.test.ts`,每个 core 模块一个对应文件,外加:`platform.test.ts`(Windows 专项:symlink EPERM 降级 copy、git 不在 PATH 的可读报错、Windows 保留名拒绝)、`server.test.ts`(起真实 HTTP 服务验证校验逻辑与 CLI 对齐)、`cli.test.ts`(端到端,用 `child_process` 跑**编译产物** `dist/cli.js`,`beforeAll` 里先自动跑 `npm run build`;Windows 上改用 `npm.cmd` 且必须带 `shell: true`——Node ≥18.20/20.12 起无 shell 直接 spawn `.cmd` 会抛 EINVAL,只换名字绕不过)。
 - **隔离约定(必须遵守)**:测试在 `beforeEach` 里把 `process.env.SSW_HOME` 指向 `fs.mkdtemp` 临时目录,`afterEach` 里删除该环境变量并 `rm` 临时目录——绝不触碰真实 `~/.skills-switch`。涉及真实文件系统的测试保持串行(这也是 `pool: 'forks'` 的原因)。`global.test.ts` 额外用 `vi.spyOn(os, 'homedir')` 指到临时目录,绝不触碰真实 home。
 - 网络相关测试注入假 `fetch`(`recommendForProject(path, name, fetchImpl)` 的第三参、`aiRecommendSkills({ ..., fetchImpl })` 与 `testAiConnection(overrides, fetchImpl)`),不打真实 GitHub/模型 API。
-- 提交改动前跑 `npm test`,当前基线:**18 个文件 202 个用例全绿**。push/PR 由 `.github/workflows/ci.yml` 跑三平台 × Node 18/20/22。
+- 提交改动前跑 `npm test`,当前基线:**18 个文件 205 个用例全绿**。push/PR 由 `.github/workflows/ci.yml` 跑三平台 × Node 18/20/22。
 
 ## 安全注意事项
 

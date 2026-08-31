@@ -3,6 +3,14 @@
 本项目遵循语义化版本;版本号单一来源是 `package.json`。
 发布走 `npm run release`(干净工作区检查 → 全量测试 → 打 tag → 推送,tag 触发三平台 Release 构建)。
 
+## v1.4.8(2026-08-31)
+
+一键收养本机所有 agent 的既有 skills:
+
+- **桌面 App 启动自动收养**:打开应用即扫描本机所有 agent 的用户级 skills 目录(`~/.claude/skills` 等),把已配置的 skills 自动收进中央库并展示在技能库,无需任何手动操作;幂等(已入库/同名跳过)、只读源目录、失败静默降级不影响启动
+- **`ssw skill adopt --all`**:一次扫描所有 agent(`--user` 用户级 / `--path` 项目级),同名 skill 跨 agent 去重,多家共享的 `.agents/skills` 目录按 realpath 只扫一次,按 agent 分组输出明细
+- REST `POST /api/skills/adopt` 支持 `{ all: true }`(缺省 user 级);GUI 收养弹窗新增「全部 agent」选项(选中自动切到用户级),按 agent 分组展示结果
+
 ## v1.4.7(2026-08-31)
 
 AI 推荐升级(含 v1.4.6 的全部安全修复,该版本未单独发布):

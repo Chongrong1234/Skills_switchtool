@@ -12,6 +12,7 @@ import { applyGlobal, readGlobal, rollbackGlobal, unapplyGlobal, updateGlobal } 
 import { exportProfile, importProfile } from './core/profile.js';
 import {
   adoptFromAgent,
+  adoptFromAllAgents,
   initSkill,
   installFromGithub,
   installFromLocal,
@@ -392,13 +393,18 @@ export function createApp(): express.Express {
     res.json(await aiRecommendSkills({ requirement, projectName: typeof projectName === 'string' ? projectName : undefined }));
   }));
 
-  // 收养:把 agent 目录(user 级或项目级)里已有的 skills 复制进中央库(逆向于 apply)
+  // 收养:把 agent 目录(user 级或项目级)里已有的 skills 复制进中央库(逆向于 apply);
+  // all:true 时一次扫描所有 agent(同名跨 agent 去重,同目录只扫一次)
   app.post('/api/skills/adopt', h(async (req, res) => {
-    const { agent, scope, projectPath } = req.body ?? {};
-    if (!agent || typeof agent !== 'string') return void res.status(400).json({ error: 'agent 必填' });
+    const { agent, scope, projectPath, all } = req.body ?? {};
     if (scope !== undefined && !['user', 'project'].includes(scope)) {
       return void res.status(400).json({ error: 'scope 只能是 user 或 project' });
     }
+    if (all === true) {
+      // 一键收养缺省 user 级("本机配过的 skills"主要指各 agent 全局目录);项目级路径缺省取 cwd
+      return void res.json(await adoptFromAllAgents({ scope: scope ?? 'user', projectPath: projectPath || process.cwd() }));
+    }
+    if (!agent || typeof agent !== 'string') return void res.status(400).json({ error: 'agent 必填(或传 all: true 收养所有 agent)' });
     // 项目级作用域的路径缺省取服务进程 cwd(与 POST /api/projects 的约定一致)
     res.json(await adoptFromAgent(agent, { scope: scope ?? 'project', projectPath: projectPath || process.cwd() }));
   }));

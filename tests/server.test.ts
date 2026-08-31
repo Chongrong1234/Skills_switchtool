@@ -176,6 +176,13 @@ describe('server 校验(与 CLI 行为对齐)', () => {
     const ok = await api('POST', '/api/skills/adopt', { agent: 'claude-code', scope: 'project', projectPath: projDir });
     expect(ok.status).toBe(200);
     expect(ok.data.adopted).toEqual([]);
+
+    // all:true 一键收养所有 agent(分目录结构;非法 scope 同样 400)
+    const all = await api('POST', '/api/skills/adopt', { all: true, scope: 'project', projectPath: projDir });
+    expect(all.status).toBe(200);
+    expect(Array.isArray(all.data.scanned)).toBe(true);
+    expect(Array.isArray(all.data.skippedAgents)).toBe(true);
+    expect((await api('POST', '/api/skills/adopt', { all: true, scope: 'nope' })).status).toBe(400);
   });
 
   it('profile 端点:导出格式、导入校验', async () => {

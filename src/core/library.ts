@@ -10,7 +10,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { getAdapter } from '../adapters/index.js';
+import { adapters, getAdapter } from '../adapters/index.js';
 import { libraryDir } from './paths.js';
 import { detachSkillFromProjects } from './projects.js';
 import { getSkill, readRegistry, upsertSkill, writeRegistry } from './registry.js';
@@ -620,6 +620,11 @@ export async function adoptFromAgent(
     if (!opts.projectPath) throw new LibraryError('project 作用域必须提供 projectPath');
     dir = adapter.projectSkillsDir(opts.projectPath);
   }
+  return adoptFromDir(dir);
+}
+
+/** 扫描单个 skills 目录并收养(adoptFromAgent / adoptFromAllAgents 共用;目录不可读抛 LibraryError) */
+async function adoptFromDir(dir: string): Promise<AdoptResult> {
   const ents = await fs.readdir(dir, { withFileTypes: true }).catch(() => null);
   if (!ents) throw new LibraryError(`目录不存在或不可读: ${dir}`);
 
@@ -655,6 +660,56 @@ export async function adoptFromAgent(
       if (msg.includes('已在库中')) result.skipped.push(ent.name);
       else result.invalid.push({ dir: sub, reason: msg });
     }
+  }
+  return result;
+}
+
+export interface AdoptAllResult {
+  scanned: { agent: string; displayName: string; dir: string; result: AdoptResult }[]; // 实际扫描的目录
+  skippedAgents: { agent: string; displayName: string; reason: string }[]; // 未检测到/目录不存在/同目录复扫
+  adopted: SkillEntry[]; // ↓ 三项为 scanned 的汇总(扁平化,便于与 AdoptResult 同口径展示)
+  skipped: string[];
+  invalid: { dir: string; reason: string }[];
+}
+
+/**
+ * 一键收养所有 agent:遍历适配器注册表,把每个 agent 的 skills 目录
+ * (user 级 = ~/.<agent>/skills;project 级 = <项目根>/.<agent>/skills)里已有的 skills 全部收进中央库。
+ * 与 adoptFromAgent 的差别:
+ * - 未检测到(user 级)/目录不存在的 agent 不报错,记入 skippedAgents 继续;
+ * - 多个 agent 指向同一目录(agents/copilot/opencode 的 .agents/skills)按 realpath 去重只扫一次;
+ * - 同名 skill 跨 agent 自然去重(顺序扫描,先入库的赢,后续同名列 skipped)。
+ */
+export async function adoptFromAllAgents(
+  opts: { scope: 'user' | 'project'; projectPath?: string },
+): Promise<AdoptAllResult> {
+  if (opts.scope === 'project' && !opts.projectPath) {
+    throw new LibraryError('project 作用域必须提供 projectPath');
+  }
+  const result: AdoptAllResult = { scanned: [], skippedAgents: [], adopted: [], skipped: [], invalid: [] };
+  const seenDirs = new Map<string, string>(); // 目录 realpath → 首个扫描它的 agent id
+  for (const adapter of adapters) {
+    const dir = opts.scope === 'user' ? adapter.userSkillsDir() : adapter.projectSkillsDir(opts.projectPath!);
+    if (opts.scope === 'user' && !(await adapter.detect())) {
+      result.skippedAgents.push({ agent: adapter.id, displayName: adapter.displayName, reason: '未检测到该 agent' });
+      continue;
+    }
+    const real = await fs.realpath(dir).catch(() => null);
+    if (!real) {
+      result.skippedAgents.push({ agent: adapter.id, displayName: adapter.displayName, reason: `目录不存在: ${dir}` });
+      continue;
+    }
+    const first = seenDirs.get(real);
+    if (first) {
+      result.skippedAgents.push({ agent: adapter.id, displayName: adapter.displayName, reason: `与 ${first} 同目录,已扫过` });
+      continue;
+    }
+    seenDirs.set(real, adapter.id);
+    const r = await adoptFromDir(dir);
+    result.scanned.push({ agent: adapter.id, displayName: adapter.displayName, dir, result: r });
+    result.adopted.push(...r.adopted);
+    result.skipped.push(...r.skipped);
+    result.invalid.push(...r.invalid);
   }
   return result;
 }

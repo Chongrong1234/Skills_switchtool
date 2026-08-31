@@ -14,6 +14,7 @@ import { applyGlobal, readGlobal, rollbackGlobal, unapplyGlobal, updateGlobal } 
 import { exportProfile, importProfile } from './core/profile.js';
 import {
   adoptFromAgent,
+  adoptFromAllAgents,
   initSkill,
   installFromGithub,
   installFromLocal,
@@ -559,16 +560,39 @@ leaf(skillCmd.command('update').description('更新 skill(省略参数则更新�
 leaf(
   skillCmd
     .command('adopt')
-    .description('收养 agent 目录里已有的 skills 进中央库(逆向于 apply)')
-    .requiredOption('--agent <id>', 'agent id(见 ssw agents)')
+    .description('收养 agent 目录里已有的 skills 进中央库(逆向于 apply);--all 一次扫描所有 agent')
+    .option('--agent <id>', 'agent id(见 ssw agents)')
+    .option('--all', '收养所有 agent(与 --agent 二选一;同名跨 agent 去重,同目录只扫一次)')
     .option('--user', '收养用户级(全局)skills 目录,缺省为项目级')
     .option('--path <path>', '项目根目录(项目级作用域用;缺省取当前工作目录)'),
 ).action(
-  wrap(async (cmd, opts: { agent: string; user?: boolean; path?: string }) => {
-    const r = await adoptFromAgent(opts.agent, {
-      scope: opts.user ? 'user' : 'project',
-      projectPath: path.resolve(opts.path ?? '.'),
-    });
+  wrap(async (cmd, opts: { agent?: string; all?: boolean; user?: boolean; path?: string }) => {
+    if (opts.all && opts.agent) throw new Error('--all 与 --agent 二选一');
+    if (!opts.all && !opts.agent) throw new Error('请指定 --agent <id>,或 --all 一次收养所有 agent');
+    const scope = opts.user ? ('user' as const) : ('project' as const);
+    const projectPath = path.resolve(opts.path ?? '.');
+    if (opts.all) {
+      const r = await adoptFromAllAgents({ scope, projectPath });
+      out(cmd, r, () => {
+        const lines: string[] = [];
+        for (const s of r.scanned) {
+          lines.push(`【${s.displayName}】${s.dir}`);
+          const sub = [
+            ...s.result.adopted.map((x) => `  ✓ ${x.id}  已收养`),
+            ...s.result.skipped.map((n) => `  - ${n}  已在库中,跳过`),
+            ...s.result.invalid.map((i) => `  ✗ ${i.dir}  ${i.reason}`),
+          ];
+          lines.push(...(sub.length ? sub : ['  (没有可收养的 skill)']));
+        }
+        lines.push(
+          `汇总:新收 ${r.adopted.length},已在库 ${r.skipped.length},非法 ${r.invalid.length}` +
+          `;跳过 agent ${r.skippedAgents.length} 个(未安装/无目录)`,
+        );
+        return lines.join('\n');
+      });
+      return;
+    }
+    const r = await adoptFromAgent(opts.agent!, { scope, projectPath });
     out(cmd, r, () => {
       const lines = [
         ...r.adopted.map((s) => `✓ ${s.id}  已收养`),

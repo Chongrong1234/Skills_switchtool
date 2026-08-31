@@ -1377,6 +1377,7 @@ function openAdoptModal() {
     <h2>收养 agent 技能</h2>
     <div class="form-row"><label>从哪个 agent 的 skills 目录收养</label>
       <select id="ad-agent">
+        <option value="__all__">★ 全部 agent(逐个目录扫描,同名去重)</option>
         ${state.agents.map((a) => `<option value="${a.id}">${esc(a.displayName)}(${a.id})${a.detected ? '' : ' — 未检测到'}</option>`).join('')}
       </select>
     </div>
@@ -1399,6 +1400,13 @@ function openAdoptModal() {
       modal.querySelector('#ad-path-row').style.display =
         modal.querySelector('input[name="ad-scope"]:checked').value === 'project' ? '' : 'none';
     }));
+  // 选「全部 agent」时默认切到用户级(本机配过的 skills 主要指各 agent 全局目录)
+  modal.querySelector('#ad-agent').addEventListener('change', () => {
+    if (modal.querySelector('#ad-agent').value === '__all__') {
+      modal.querySelector('input[name="ad-scope"][value="user"]').checked = true;
+      modal.querySelector('#ad-path-row').style.display = 'none';
+    }
+  });
   modal.querySelector('#m-cancel').addEventListener('click', closeModal);
   modal.querySelector('#m-ok').addEventListener('click', () => run(async () => {
     const agent = modal.querySelector('#ad-agent').value;
@@ -1408,18 +1416,30 @@ function openAdoptModal() {
     btn.disabled = true; btn.textContent = '收养中…';
     let r;
     try {
-      r = await api('POST', '/api/skills/adopt', { agent, scope, ...(projectPath ? { projectPath } : {}) });
+      r = agent === '__all__'
+        ? await api('POST', '/api/skills/adopt', { all: true, scope, ...(projectPath ? { projectPath } : {}) })
+        : await api('POST', '/api/skills/adopt', { agent, scope, ...(projectPath ? { projectPath } : {}) });
     } catch (err) {
       btn.disabled = false; btn.textContent = '收养';
       throw err;
     }
     await loadAll();
     render(); // 主区卡片刷新;弹窗保持打开展示明细
-    const lines = [
-      ...r.adopted.map((s) => `✓ ${s.id}  已收养`),
-      ...r.skipped.map((n) => `- ${n}  已在库中,跳过`),
-      ...r.invalid.map((i) => `✗ ${i.dir}  ${i.reason}`),
-    ];
+    const lines = [];
+    if (r.scanned) {
+      // 全部 agent:分目录展示明细
+      for (const s of r.scanned) {
+        lines.push(`【${s.displayName}】`);
+        lines.push(...s.result.adopted.map((x) => `✓ ${x.id}  已收养`));
+        lines.push(...s.result.skipped.map((n) => `- ${n}  已在库中,跳过`));
+        lines.push(...s.result.invalid.map((i) => `✗ ${i.dir}  ${i.reason}`));
+      }
+      if (r.skippedAgents.length) lines.push(`(另跳过 ${r.skippedAgents.length} 个未安装或无目录的 agent)`);
+    } else {
+      lines.push(...r.adopted.map((s) => `✓ ${s.id}  已收养`));
+      lines.push(...r.skipped.map((n) => `- ${n}  已在库中,跳过`));
+      lines.push(...r.invalid.map((i) => `✗ ${i.dir}  ${i.reason}`));
+    }
     modal.querySelector('#ad-result').innerHTML = lines.length
       ? `<div class="rec-list">${lines.map((l) => `<div class="rec-item"><div class="rdesc">${esc(l)}</div></div>`).join('')}</div>`
       : '<div class="empty">该目录下没有可收养的 skill</div>';

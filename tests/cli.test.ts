@@ -369,6 +369,16 @@ describe('ssw CLI', () => {
       const again = JSON.parse((await cliWithEnv(env, 'skill', 'adopt', '--agent', 'claude-code', '--user', '--json')).stdout);
       expect(again.adopted).toEqual([]);
       expect(again.skipped).toContain('own-skill');
+
+      // adopt --all:一次扫描所有 agent(用户级);新 agent 目录里的收养,已在库的跳过
+      const kimiDir = path.join(fakeHome, '.kimi-code', 'skills', 'kimi-only');
+      await fs.mkdir(kimiDir, { recursive: true });
+      await fs.writeFile(path.join(kimiDir, 'SKILL.md'), '---\nname: kimi-only\ndescription: 自攒2\n---\n', 'utf8');
+      const all = JSON.parse((await cliWithEnv(env, 'skill', 'adopt', '--all', '--user', '--json')).stdout);
+      expect(all.adopted.map((s: { id: string }) => s.id)).toEqual(['local:kimi-only']);
+      expect(all.skipped).toContain('own-skill');
+      expect(all.scanned.length).toBeGreaterThan(0);
+      expect(all.skippedAgents.length).toBeGreaterThan(0);
     } finally {
       await fs.rm(fakeHome, { recursive: true, force: true });
     }
