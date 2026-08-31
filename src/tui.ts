@@ -7,12 +7,13 @@
  * a apply / u unapply / r 回滚 / i AI 推荐 / s 技能库 / m MCP 库 / g 全局共享 / c 推荐库 / d 环境自检 / q 或 Ctrl-C 退出,Esc 返回项目视图。
  * 全局共享视图里 a/u/r 作用于全局(用户级)物化;推荐库视图内 c 循环切换分类过滤、k 循环切换类型过滤(全部 → 仅 skills → 仅 MCP,
  * skills 与 MCP 的浏览/下载分流);
- * AI 推荐视图(i 键输入开发需求后进入)内 a 把推荐全部并入光标项目;技能库/MCP 库/推荐库为只读视图(增删改走 CLI 子命令)。
+ * AI 推荐视图(i 键输入开发需求后进入)内 a 把推荐全部并入光标项目;推荐含本地技能库与 GitHub 联网两路
+ * (联网部分只读,安装走 CLI ssw skill add --github);技能库/MCP 库/推荐库为只读视图(增删改走 CLI 子命令)。
  */
 import path from 'node:path';
 import readline from 'node:readline';
 import { adapters, getAdapter } from './adapters/index.js';
-import { aiRecommendSkills, type AiRecommendedSkill } from './core/ai.js';
+import { aiRecommendSkills, type AiGithubRecommendation, type AiRecommendedSkill } from './core/ai.js';
 import { applyProject, unapplyProject } from './core/apply.js';
 import { CATALOG_CATEGORIES, listCatalogWithInstalled, type CatalogEntryWithInstalled } from './core/catalog.js';
 import {
@@ -51,7 +52,7 @@ interface State {
   /** 环境自检结果(null = 尚未运行;d 键触发) */
   doctor: DoctorReport | null;
   /** AI 推荐结果(i 键触发;绑定作用的目标项目随结果一起存) */
-  aiRec: { projectId: string; items: AiRecommendedSkill[]; message?: string } | null;
+  aiRec: { projectId: string; items: AiRecommendedSkill[]; github: AiGithubRecommendation[]; message?: string; githubMessage?: string } | null;
 }
 
 const INV = '\x1b[7m'; // 反色(光标行)
@@ -203,18 +204,32 @@ export async function startTui(): Promise<void> {
       lines.push('');
       lines.push(`${DIM}d 重新自检  Esc 返回项目视图  q 退出${RESET}`);
     } else if (state.view === 'ai') {
-      lines.push('AI 技能推荐(模型读本地技能库):');
+      lines.push('AI 技能推荐(模型读本地技能库 + 联网搜 GitHub):');
       lines.push('');
       const rec = state.aiRec;
-      if (!rec || !rec.items.length) {
-        lines.push(`(${rec?.message ?? '暂无结果——在项目视图按 i 输入开发需求'})`);
+      if (!rec || (!rec.items.length && !rec.github.length)) {
+        lines.push(`(${rec?.message ?? rec?.githubMessage ?? '暂无结果——在项目视图按 i 输入开发需求'})`);
       } else {
         const proj = state.projects.find((p) => p.id === rec.projectId);
         lines.push(`目标项目: ${proj?.name ?? rec.projectId}`);
         lines.push('');
-        for (const it of rec.items.slice(0, rows - 10)) {
-          lines.push(`  ${cut(it.name, 20).padEnd(20)} ${cut(it.id, 34)}`);
-          if (it.reason) lines.push(`      ${DIM}${cut(it.reason, cols - 8)}${RESET}`);
+        if (rec.items.length) {
+          for (const it of rec.items.slice(0, rows - 14)) {
+            lines.push(`  ${cut(it.name, 20).padEnd(20)} ${cut(it.id, 34)}`);
+            if (it.reason) lines.push(`      ${DIM}${cut(it.reason, cols - 8)}${RESET}`);
+          }
+        } else if (rec.message) {
+          lines.push(`(${rec.message})`);
+        }
+        if (rec.github.length) {
+          lines.push('');
+          lines.push('GitHub 联网推荐(未入库;安装: ssw skill add --github <owner/repo>):');
+          const remain = Math.max(0, rows - 16 - rec.items.length * 2);
+          for (const g of rec.github.slice(0, remain)) {
+            lines.push(`  ★${g.stars}  ${cut(g.repo, 40)}  ${DIM}${cut(g.description, cols - 52)}${RESET}`);
+          }
+        } else if (rec.githubMessage) {
+          lines.push(`${DIM}(${rec.githubMessage})${RESET}`);
         }
       }
       lines.push('');
@@ -409,6 +424,7 @@ export async function startTui(): Promise<void> {
                 } else {
                   extra = `;AI 推荐: ${r.message ?? '无结果'}`;
                 }
+                if (r.github.length) extra += `;GitHub 联网推荐 ${r.github.length} 个(ssw ai recommend "<需求>" 查看)`;
               }
               return `✓ 已创建项目「${p.name}」(${p.id.slice(0, 8)}…)${extra},Enter 切换并 apply`;
             });
@@ -448,12 +464,16 @@ export async function startTui(): Promise<void> {
             }
             await run(async () => {
               const r = await aiRecommendSkills({ requirement, projectName: p.name });
-              state.aiRec = { projectId: p.id, items: r.items, message: r.message };
-              if (r.items.length) {
+              state.aiRec = { projectId: p.id, items: r.items, github: r.github, message: r.message, githubMessage: r.githubMessage };
+              if (r.items.length || r.github.length) {
                 state.view = 'ai';
-                return `AI(${r.model ?? '模型'})推荐了 ${r.items.length} 个技能:按 a 全部并入「${p.name}」`;
+                const parts = [
+                  r.items.length ? `本地 ${r.items.length} 个(按 a 全部并入「${p.name}」)` : '',
+                  r.github.length ? `GitHub ${r.github.length} 个(CLI: ssw skill add --github 安装)` : '',
+                ].filter(Boolean);
+                return `AI(${r.model ?? '模型'})推荐: ${parts.join(' + ')}`;
               }
-              return `AI 推荐: ${r.message ?? '无结果'}`;
+              return `AI 推荐: ${r.message ?? r.githubMessage ?? '无结果'}`;
             });
           })();
           break;

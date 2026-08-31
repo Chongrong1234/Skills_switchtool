@@ -4,7 +4,7 @@
 
 ## 项目概述
 
-**Skills SwitchTool**(`skills-switchtool`,v1.4.6):项目中心化的 Agent Skills 管理工具。交互模式仿照 cc-switch:**中央存储 + 切换 + 写入目标工具配置位置 + 快照可回滚**。
+**Skills SwitchTool**(`skills-switchtool`,v1.4.7):项目中心化的 Agent Skills 管理工具。交互模式仿照 cc-switch:**中央存储 + 切换 + 写入目标工具配置位置 + 快照可回滚**。
 
 核心概念:
 
@@ -14,7 +14,7 @@
 - **全局(用户级)共享应用**(`src/core/global.ts`):把选定 skills 物化到各 agent 的用户级 skills 目录(`~/.claude/skills` 等,即适配器的 `userSkillsDir()`),一次配置、该 agent 的所有项目共享。档案存 `global.json`,快照挂在固定名 `__global__` 下,复用 apply.ts 的物化/移除原语与 snapshot.rollback。**MCP 是项目级概念,全局共享只管 skills**。CLI(`ssw global`)、REST(`/api/global*`)、桌面 GUI(「全局共享」视图)、TUI(g 键)均已接入。
 - **配置库导出/导入**(`src/core/profile.ts`):`ssw-profile@1` 单文件 bundle(skills 注册表 + MCP + 项目档案 + 全局档案 + local 技能实体 base64),跨机器/跨平台整体搬家;导入幂等——github 按仓库去重重克隆、local 文件落库带路径穿越防护、项目 id 冲突换新 id、`activeProjectId` 与全局档案仅在本机空缺时采用。
 - **收养既有 skills**(library.ts `adoptFromAgent`):把 agent 用户级/项目级 skills 目录里已存在的 skills 收进中央库(跳过指向库内的 symlink 与同名条目),先纳管再统一分发。
-- **AI 技能推荐**(`src/core/ai.ts`):新建项目时填开发需求,模型(OpenAI 兼容 chat/completions)读本地技能库给出初步推荐供勾选绑定;配置存 `ai.json`(baseUrl/model/apiKey,预设 Kimi/DeepSeek/OpenAI/OpenRouter,baseUrl 可填中转站);未配置 key/库空/断网/解析失败一律降级为 `{ items: [], message }` 不抛异常;CLI(`ssw ai`)、REST(`/api/ai/*`)、桌面 GUI(新建项目弹窗 + 设置弹窗)、TUI(i 键)均已接入。
+- **AI 技能推荐**(`src/core/ai.ts`):填开发需求,模型(OpenAI 兼容 chat/completions)读本地技能库给出初步推荐供勾选绑定,**新建项目弹窗与项目详情页均可多次调用**;同时**联网搜 GitHub**——模型输出 githubKeywords(没给则用需求里的英文词兜底),按 `topic:agent-skills <关键词>` 搜仓库(复用 recommend 的 24h 缓存),去重、排除已入库、按 star 降序,可一键安装入库;本地与联网两路成败互相隔离(库空跳过模型只走联网;模型挂了仍有 GitHub 结果);配置存 `ai.json`(baseUrl/model/apiKey,预设 Kimi/DeepSeek/OpenAI/OpenRouter,baseUrl 可填中转站);未配置 key/断网/解析失败一律降级为 `{ items: [], github: [], message }` 不抛异常;CLI(`ssw ai`)、REST(`/api/ai/*`)、桌面 GUI(新建项目弹窗 + 项目详情「AI 推荐」区 + 设置弹窗)、TUI(i 键)均已接入。
 - **快照回滚**:每次 apply 前在 `snapshots/<projectId>/` 建快照(全局共享用 `snapshots/__global__/`),每项目保留最近 5 份,`rollback` 逆序还原最近一次(skills 与 MCP 同一份快照,一起还原)。
 - **热度排序选配**(`src/core/rank.ts`):给项目/全局共享选技能时,常用的排前面。三个信号加权:使用次数(绑定即计——`registry.markSkillsUsed` 挂在 updateProject/updateGlobal 的技能集差集上,只增不减,每次 +10)> 项目分类匹配(技术栈 + 项目名分词命中 skill 的 name/description/tags,每个 +6;`projectRankContext` 复用 recommend 的检测/分词口径)> 仓库 stars(安装/更新时 `fetchRepoStars` 采集,软失败;log10 压量纲 ×4)。`rankSkills` 稳定降序;REST `GET /api/skills?rank=1[&forProject=id]`(不带 rank 保持注册表原顺序,向后兼容)、GUI 两个"从库中添加"弹窗、AI 推荐载荷(stars/uses 作相关度 tie-break)均已接入;CLI `skill list` 与 TUI 技能库视图带 ★/用N 热度标记;重装/更新 skill 时 upsert 保留 useCount/stars 统计。
 
@@ -94,14 +94,23 @@ src/
                          #   只管 skills 不管 MCP;CLI/REST/桌面 GUI/TUI 均已接线
     snapshot.ts          # 快照/回滚;MAX_SNAPSHOTS = 5;移动走 moveEntry:跨设备 EXDEV 降级 复制+删除(Windows 多盘符)
     recommend.ts         # 技术栈检测(package.json/go.mod/Cargo.toml/pyproject.toml)+ GitHub Search API;
-                         #   24h 缓存(cache/);断网/限流降级返回 { items: [], message },绝不抛异常
-    ai.ts                # AI 技能推荐:OpenAI 兼容 chat/completions 读本地技能库,按用户需求挑技能;
+                         #   searchGithubSkillsCached(query, fetchImpl):任意查询词的仓库搜索
+                         #   (24h 缓存 cache/,sha1(query) 作文件名),ai.ts 联网推荐复用;
+                         #   断网/限流降级返回 { items: [], message },绝不抛异常
+    ai.ts                # AI 技能推荐:OpenAI 兼容 chat/completions 读本地技能库按需求挑技能(本地库推荐),
+                         #   同时联网搜 GitHub 做库外推荐:模型输出 githubKeywords(parseAiGithubKeywords
+                         #   清洗:小写/合法字符/2-40 字符/去重/≤3),没给则 fallbackGithubKeywords
+                         #   取需求里的英文词(≥3 字符,≤2);searchGithubForRequirement 按
+                         #   topic:agent-skills <kw> 搜仓(复用 recommend 的 24h 缓存),排除已入库、
+                         #   去重、star 降序、上限 8(MAX_GITHUB_RECOMMENDATIONS);
+                         #   本地与联网两路成败互相隔离:库空跳过模型只走联网,模型挂了仍有 GitHub 结果;
                          #   配置 ai.json(baseUrl/model/apiKey,字段级容错),AI_PRESETS 预设
                          #   Kimi/DeepSeek/OpenAI/OpenRouter,baseUrl 可填中转站(chatEndpoint 端点归一);
                          #   GET 只回掩码(toPublicConfig)不回 key 原文;超时 60s(SSW_AI_TIMEOUT_MS 覆盖);
-                         #   parseAiRecommendations 容忍围栏/裸数组/解释文字,幻觉 id 丢弃,上限 8 个;
-                         #   testAiConnection 走同款最小 chat 请求(测过即推荐可用);fetchImpl 可注入(测试);
-                         #   一切失败降级 { items: [], message } 不抛异常;AiError(配置校验)映射 400
+                         #   extractJson 共享解析器,parseAiRecommendations 容忍围栏/裸数组/解释文字,
+                         #   幻觉 id 丢弃,上限 8 个;testAiConnection 走同款最小 chat 请求(测过即推荐可用);
+                         #   fetchImpl 可注入(测试);一切失败降级 { items: [], github: [], message } 不抛异常;
+                         #   AiError(配置校验)映射 400
     rank.ts              # 热度排序:skillScore(使用次数×10 > 项目关键词匹配×6 > log10(stars)×4)+
                          #   rankSkills 稳定降序;projectRankContext 复用 detectTechStack + 项目名分词
     migrate.ts           # 迁移码:ssw1:owner/repo,... 仅含 github 来源,按仓库去重;
@@ -173,14 +182,16 @@ src/
                          #   skill list 带 ★stars/用N次 热度标记;
                          #   skill adopt --agent <id> [--user|--path];global show/bind/agents/apply/unapply/rollback;
                          #   ai config [--preset/--base-url/--model/--api-key](不带选项=查看+预设清单)/ test /
-                         #   recommend "<需求>" [--bind 项目](并入技能集);project create --ai "<需求>" 创建即推荐并自动绑定;
+                         #   recommend "<需求>" [--bind 项目](并入技能集),输出含 GitHub 联网推荐段;
+                         #   project create --ai "<需求>" 创建即推荐并自动绑定;本地/联网两路都无结果退出码才非零;
                          #   profile export [--file](警告打 stderr)/ import <file>(导入 failed 非零时退出码 1)
   tui.ts                 # 终端交互面板:项目列表(光标项目附技能/MCP 绑定摘要行)+ ↑↓/Enter/n/x/a/u/r/i/s/m/g/c/d/q
                          #   按键(n 新建项目:依次询问名称/路径/agents/模式/开发需求,字段与 GUI 新建项目弹窗同口径,
                          #   填了需求则 AI 推荐并整体绑定;x 删除项目档案:y 二次确认,只删档案不动磁盘文件;
                          #   g 全局共享视图内 a/u/r 作用于全局;推荐库视图内 c 循环切换分类过滤、
                          #   k 循环切换类型过滤——全部/仅 skills/仅 MCP,与分类过滤叠加,skills 与 MCP 分流;
-                         #   i AI 推荐:readline 临时退出 raw 模式读一行需求,结果视图内 a 全部并入光标项目;
+                         #   i AI 推荐:readline 临时退出 raw 模式读一行需求,结果视图含本地库+GitHub 联网两段,
+                         #   任一路有结果即进 ai 视图,a 全部并入光标项目;
                          #   d 环境自检视图(d 重跑);技能库视图带 ★/用N 热度标记;技能库/MCP/推荐库只读);
                          #   stdin raw 模式 + ANSI 整帧重绘
   version.ts             # 版本号单一来源:运行时读 ../package.json(src/ 与 dist/ 都恰在根下一层);
@@ -189,7 +200,10 @@ electron/main.mjs        # Electron 主进程:动态 import dist/serve.js,127.0.
 public/                  # 原生单页应用(index.html / app.js / style.css),无构建步骤;深/浅双主题:
                          #   CSS 变量在 style.css 顶部,选择存 localStorage(ssw-theme),
                          #   index.html head 内联脚本在首屏前恢复主题;
-                         #   新建项目弹窗含「开发需求」AI 推荐区(勾选绑定);设置弹窗含 AI 配置(预设/baseUrl/模型/Key + 测连);
+                         #   新建项目弹窗与项目详情页均含「开发需求」AI 推荐区(可多次调用,结果存 state.aiBox
+                         #   重绘后恢复;runAiRecommend+renderAiBox 共享渲染:本地推荐勾选绑定,
+                         #   GitHub 联网推荐一键安装并绑定,已绑定/已入库禁用态);
+                         #   设置弹窗含 AI 配置(预设/baseUrl/模型/Key + 测连);
                          #   MCP 服务页每个 server 带「设置」按钮,弹窗编辑配置(名称锁定,POST /api/mcps 同名 upsert 保存)
 scripts/                 # make-icon.mjs(生成图标)、build-cli.mjs(esbuild 打 CLI 单文件,注入 createRequire + __SSW_VERSION__)、
                          #   release.mjs(npm run release:干净工作区检查 → 全量测试 → 打 tag → push main+tag)
@@ -219,7 +233,7 @@ electron-builder.yml     # 打包配置:Linux AppImage + Windows NSIS(中文安�
 - 测试文件在 `tests/*.test.ts`,每个 core 模块一个对应文件,外加:`platform.test.ts`(Windows 专项:symlink EPERM 降级 copy、git 不在 PATH 的可读报错、Windows 保留名拒绝)、`server.test.ts`(起真实 HTTP 服务验证校验逻辑与 CLI 对齐)、`cli.test.ts`(端到端,用 `child_process` 跑**编译产物** `dist/cli.js`,`beforeAll` 里先自动跑 `npm run build`;Windows 上改用 `npm.cmd` 且必须带 `shell: true`——Node ≥18.20/20.12 起无 shell 直接 spawn `.cmd` 会抛 EINVAL,只换名字绕不过)。
 - **隔离约定(必须遵守)**:测试在 `beforeEach` 里把 `process.env.SSW_HOME` 指向 `fs.mkdtemp` 临时目录,`afterEach` 里删除该环境变量并 `rm` 临时目录——绝不触碰真实 `~/.skills-switch`。涉及真实文件系统的测试保持串行(这也是 `pool: 'forks'` 的原因)。`global.test.ts` 额外用 `vi.spyOn(os, 'homedir')` 指到临时目录,绝不触碰真实 home。
 - 网络相关测试注入假 `fetch`(`recommendForProject(path, name, fetchImpl)` 的第三参、`aiRecommendSkills({ ..., fetchImpl })` 与 `testAiConnection(overrides, fetchImpl)`),不打真实 GitHub/模型 API。
-- 提交改动前跑 `npm test`,当前基线:**18 个文件 196 个用例全绿**。push/PR 由 `.github/workflows/ci.yml` 跑三平台 × Node 18/20/22。
+- 提交改动前跑 `npm test`,当前基线:**18 个文件 202 个用例全绿**。push/PR 由 `.github/workflows/ci.yml` 跑三平台 × Node 18/20/22。
 
 ## 安全注意事项
 
@@ -234,4 +248,4 @@ electron-builder.yml     # 打包配置:Linux AppImage + Windows NSIS(中文安�
 - 不要把 `SSW_HOME` 指向的目录当作可信输入边界——它存放的就是本工具的全部状态,损坏时要容错而不是崩溃。
 - AI 配置的 apiKey **明文存于** `ai.json`(落盘 0600 仅属主可读写,与各家 CLI 的凭据文件同级风险):服务仅监听 127.0.0.1,REST/日志/导出(profile bundle 不含 ai.json)都不得回传 key 原文,GET /api/ai/config 只回掩码。
 
-每次修改界面或增加功能，要同步增加所有release版本功能,并在确认正确后直接提交，核心产品是appimage和cli，不需要做web，不增添功能的提交覆盖原版本即可，功能新增提交再迭代小版本
+每次修改界面或增加功能，要同步增加所有release版本功能,并在确认正确后直接提交，核心产品是appimage和cli，不需要做web，不增添功能的提交覆盖原版本即可，功能新增提交再迭代小版本，版本更新确认正确后自动推送到releases

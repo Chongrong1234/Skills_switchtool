@@ -1,15 +1,20 @@
 /**
  * AI 推荐:用 OpenAI 兼容的 chat/completions 接口,让模型读本地中央技能库,
- * 结合用户输入的开发需求,给出初步技能推荐(新建项目时的选品起点)。
+ * 结合用户输入的开发需求,给出初步技能推荐(新建项目时的选品起点;项目详情可多次调用)。
+ * 同时联网搜 GitHub:模型输出 githubKeywords(缺省用需求里的英文词兜底),
+ * 按 topic:agent-skills <关键词> 搜仓库(复用 recommend.ts 的 24h 缓存),去重、排除已入库、按 star 排序。
  *
  * 配置存 ai.json(baseUrl / model / apiKey,字段级容错读、原子写);
  * baseUrl 可以是官方端点也可以是任何 OpenAI 兼容中转站;apiKey 明文存于本机
- * 数据目录(服务仅监听 127.0.0.1),GET 接口只回掩码不回原文。
- * 与 recommend.ts 同一约定:任何网络/解析失败都降级为 { items: [], message },绝不抛异常
+ * 数据目录(0600;服务仅监听 127.0.0.1 且有回环防护),GET 接口只回掩码不回原文。
+ * 与 recommend.ts 同一约定:任何网络/解析失败都降级为空数组 + message,绝不抛异常
  * (配置校验错误除外——那是用户输入问题,抛 AiError 由上层映射 400)。
+ * 本地推荐与联网推荐成败互相隔离:模型挂了仍有 GitHub 结果,GitHub 挂了不影响本地结果。
  */
 import { aiFile } from './paths.js';
+import { searchGithubSkillsCached } from './recommend.js';
 import { atomicWriteJson, readJsonSafe, readRegistry } from './registry.js';
+import type { SkillEntry } from './types.js';
 
 export class AiError extends Error {}
 
@@ -152,28 +157,35 @@ export async function testAiConnection(
 }
 
 /**
- * 解析模型输出为 {id, reason} 列表:容忍模型把 JSON 包在 ```json 围栏或前后解释文字里,
- * 也容忍顶层是数组或 {recommendations|skills|items: [...]}。
+ * 从模型输出里容忍地提取 JSON:容忍 ```json 围栏与前后解释文字。
+ * 谁先出现先试谁:裸数组 [{"id":...}] 里也含 '{',不能无条件对象优先(会吃掉内部对象)。
  */
-export function parseAiRecommendations(content: string): { id: string; reason: string }[] {
+function extractJson(content: string): unknown {
   const objStart = content.indexOf('{');
   const arrStart = content.indexOf('[');
-  let parsed: unknown = null;
-  // 谁先出现先试谁:裸数组 [{"id":...}] 里也含 '{',不能无条件对象优先(会吃掉内部对象)
   if (objStart >= 0 && (arrStart < 0 || objStart < arrStart)) {
     try {
-      parsed = JSON.parse(content.slice(objStart, content.lastIndexOf('}') + 1));
+      return JSON.parse(content.slice(objStart, content.lastIndexOf('}') + 1));
     } catch {
       /* 落到数组尝试 */
     }
   }
-  if (parsed === null && arrStart >= 0) {
+  if (arrStart >= 0) {
     try {
-      parsed = JSON.parse(content.slice(arrStart, content.lastIndexOf(']') + 1));
+      return JSON.parse(content.slice(arrStart, content.lastIndexOf(']') + 1));
     } catch {
-      return [];
+      return null;
     }
   }
+  return null;
+}
+
+/**
+ * 解析模型输出为 {id, reason} 列表:容忍模型把 JSON 包在 ```json 围栏或前后解释文字里,
+ * 也容忍顶层是数组或 {recommendations|skills|items: [...]}。
+ */
+export function parseAiRecommendations(content: string): { id: string; reason: string }[] {
+  const parsed = extractJson(content);
   const list = Array.isArray(parsed)
     ? parsed
     : parsed && typeof parsed === 'object'
@@ -194,6 +206,37 @@ export function parseAiRecommendations(content: string): { id: string; reason: s
   return out;
 }
 
+/**
+ * 解析模型给的 GitHub 联网搜索关键词(githubKeywords 字段)。
+ * 清洗:小写、只允许安全的搜索词字符、2~40 字符、去重、最多 3 个。
+ */
+export function parseAiGithubKeywords(content: string): string[] {
+  const parsed = extractJson(content);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return [];
+  const raw = (parsed as Record<string, unknown>).githubKeywords;
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  for (const k of raw) {
+    if (typeof k !== 'string') continue;
+    const w = k.trim().toLowerCase();
+    if (!/^[a-z0-9][a-z0-9\-_. ]{1,39}$/.test(w)) continue;
+    if (!out.includes(w)) out.push(w);
+    if (out.length >= 3) break;
+  }
+  return out;
+}
+
+/** 模型没给关键词时的兜底:取需求里的英文/数字词(≥3 字符;GitHub 搜索对中文词基本无感) */
+export function fallbackGithubKeywords(requirement: string): string[] {
+  const out: string[] = [];
+  for (const w of requirement.toLowerCase().split(/[^a-z0-9\-_.]+/)) {
+    if (w.length < 3) continue;
+    if (!out.includes(w)) out.push(w);
+    if (out.length >= 2) break;
+  }
+  return out;
+}
+
 export interface AiRecommendedSkill {
   id: string;
   name: string;
@@ -203,83 +246,146 @@ export interface AiRecommendedSkill {
   useCount?: number; // 用户历史使用次数(热度展示)
 }
 
+/** GitHub 联网推荐(库外候选,可一键安装入库) */
+export interface AiGithubRecommendation {
+  repo: string;        // owner/repo
+  name: string;
+  url: string;
+  stars: number;
+  description: string;
+  keyword: string;     // 命中的搜索关键词(模型给出或需求兜底)
+}
+
 export interface AiRecommendResult {
   items: AiRecommendedSkill[];
-  message?: string; // 降级说明(未配置/库为空/网络失败/无结果)
+  github: AiGithubRecommendation[]; // GitHub 联网推荐;与本地库推荐成败互相隔离
+  message?: string;       // 本地推荐的降级说明(未配置/库为空/网络失败/无结果)
+  githubMessage?: string; // 联网推荐的降级说明(限流/断网/无关键词)
   model?: string;   // 实际使用的模型(便于前端展示"由 X 生成")
 }
 
+/** 单次联网推荐返回的仓库上限 */
+export const MAX_GITHUB_RECOMMENDATIONS = 8;
+
 /**
- * AI 推荐技能:把中央库的 id/name/description/tags 喂给模型,按需求挑最相关的技能。
- * 幻觉 id(不在库中的)直接丢弃;任何失败降级为 { items: [], message },不抛异常。
+ * GitHub 联网推荐:按(模型给的或需求兜底的)关键词搜 topic:agent-skills 仓库,
+ * 多关键词结果合并去重、排除已入库的仓库、按 star 降序。
+ * 24h 缓存复用 recommend.ts;失败降级为空 + message,不抛异常。
+ */
+async function searchGithubForRequirement(
+  requirement: string,
+  keywords: string[],
+  skills: SkillEntry[],
+  fetchImpl: FetchLike,
+): Promise<{ items: AiGithubRecommendation[]; message?: string }> {
+  const kws = (keywords.length ? keywords : fallbackGithubKeywords(requirement)).slice(0, 3);
+  if (!kws.length) return { items: [], message: '无可用搜索关键词,未进行 GitHub 联网推荐' };
+  try {
+    const perKw = await Promise.all(kws.map((kw) => searchGithubSkillsCached(`topic:agent-skills ${kw}`, fetchImpl)));
+    const installedRepos = new Set(
+      skills.filter((s) => s.source.type === 'github').map((s) => s.id.split(':')[0]),
+    );
+    const seen = new Set<string>();
+    const items: AiGithubRecommendation[] = [];
+    for (let i = 0; i < kws.length; i++) {
+      for (const r of perKw[i]) {
+        if (seen.has(r.full_name) || installedRepos.has(r.full_name)) continue;
+        seen.add(r.full_name);
+        items.push({
+          repo: r.full_name,
+          name: r.name,
+          url: r.html_url,
+          stars: r.stargazers_count,
+          description: r.description ?? '',
+          keyword: kws[i],
+        });
+      }
+    }
+    items.sort((a, b) => b.stars - a.stars);
+    return { items: items.slice(0, MAX_GITHUB_RECOMMENDATIONS) };
+  } catch (err) {
+    return { items: [], message: `GitHub 联网推荐不可用(已降级): ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
+/**
+ * AI 推荐技能:把中央库的 id/name/description/tags 喂给模型,按需求挑最相关的技能;
+ * 同时让模型给出 GitHub 搜索关键词(githubKeywords),联网搜 agent-skills 仓库作"库外推荐"
+ * (模型没给关键词时用需求里的英文词兜底;本地与联网两路成败互相隔离)。
+ * 幻觉 id(不在库中的)直接丢弃;任何失败降级为空数组 + message,不抛异常。
  */
 export async function aiRecommendSkills(
   input: { requirement: string; projectName?: string; fetchImpl?: FetchLike },
 ): Promise<AiRecommendResult> {
   const fetchImpl = input.fetchImpl ?? fetch;
-  try {
-    const requirement = input.requirement.trim();
-    if (!requirement) return { items: [], message: '请先用一两句话描述开发需求' };
+  const requirement = input.requirement.trim();
+  if (!requirement) return { items: [], github: [], message: '请先用一两句话描述开发需求' };
 
-    const cfg = await readAiConfig();
-    if (!cfg.apiKey) {
-      return { items: [], message: '未配置 AI:请在设置(或 ssw ai config)中填 API Key,可换 baseUrl 接中转站' };
-    }
-
-    const skills = await readRegistry();
-    if (!skills.length) {
-      return { items: [], message: '技能库为空:先添加一些 skill,AI 才有可推荐的内容' };
-    }
-
-    // 只喂必要字段控制 token;stars/uses 作为相关度相近时的 tie-break(更常用更可靠)
-    const catalog = skills.map((s) => ({
-      id: s.id,
-      name: s.name,
-      description: s.description,
-      tags: s.tags,
-      stars: s.stars ?? 0,
-      uses: s.useCount ?? 0,
-    }));
-    const messages: ChatMessage[] = [
-      {
-        role: 'system',
-        content:
-          '你是 Agent Skills 推荐助手。根据用户的开发需求,从给定的技能库 JSON 中挑选最有帮助的技能。' +
-          `只输出 JSON:{"recommendations":[{"id":"<技能id>","reason":"<一句中文理由>"}]},不要输出任何其他内容。` +
-          `id 必须原样取自技能库,最多 ${MAX_AI_RECOMMENDATIONS} 个,按相关度降序;没有合适的就返回 {"recommendations":[]}。` +
-          '相关度相近时,优先 stars(社区热度)与 uses(用户历史使用次数)更高的技能。',
-      },
-      {
-        role: 'user',
-        content:
-          `开发需求:${requirement}` +
-          (input.projectName ? `\n项目名:${input.projectName}` : '') +
-          `\n技能库:\n${JSON.stringify(catalog)}`,
-      },
-    ];
-    const content = await chatCompletions(cfg, messages, 1024, fetchImpl);
-
-    const picked = parseAiRecommendations(content);
-    const byId = new Map(skills.map((s) => [s.id, s]));
-    const seen = new Set<string>();
-    const items: AiRecommendedSkill[] = [];
-    for (const p of picked) {
-      const entry = byId.get(p.id);
-      if (!entry || seen.has(p.id)) continue; // 幻觉 id / 重复 id 丢弃
-      seen.add(p.id);
-      items.push({ id: entry.id, name: entry.name, description: entry.description, reason: p.reason, stars: entry.stars, useCount: entry.useCount });
-      if (items.length >= MAX_AI_RECOMMENDATIONS) break;
-    }
-    return {
-      items,
-      model: cfg.model,
-      message: items.length === 0 ? 'AI 没有给出匹配的推荐(可换需求描述重试)' : undefined,
-    };
-  } catch (err) {
-    // 断网/超时/解析失败:与 recommend.ts 同约定,降级返回空数组 + 说明
-    return {
-      items: [],
-      message: `AI 推荐不可用(已降级): ${err instanceof Error ? err.message : String(err)}`,
-    };
+  const cfg = await readAiConfig();
+  if (!cfg.apiKey) {
+    return { items: [], github: [], message: '未配置 AI:请在设置(或 ssw ai config)中填 API Key,可换 baseUrl 接中转站' };
   }
+
+  const skills = await readRegistry();
+
+  // ---- 1) 本地库推荐(模型);库为空时跳过模型调用,只走联网推荐 ----
+  let items: AiRecommendedSkill[] = [];
+  let keywords: string[] = [];
+  let message: string | undefined;
+  if (!skills.length) {
+    message = '技能库为空:本地无可推荐,以下为 GitHub 联网推荐(可一键安装入库)';
+  } else {
+    try {
+      // 只喂必要字段控制 token;stars/uses 作为相关度相近时的 tie-break(更常用更可靠)
+      const catalog = skills.map((s) => ({
+        id: s.id,
+        name: s.name,
+        description: s.description,
+        tags: s.tags,
+        stars: s.stars ?? 0,
+        uses: s.useCount ?? 0,
+      }));
+      const messages: ChatMessage[] = [
+        {
+          role: 'system',
+          content:
+            '你是 Agent Skills 推荐助手。根据用户的开发需求,从给定的技能库 JSON 中挑选最有帮助的技能,' +
+            '并给出用于在 GitHub 搜索相关技能仓库的关键词。' +
+            '只输出 JSON:{"recommendations":[{"id":"<技能id>","reason":"<一句中文理由>"}],"githubKeywords":["<英文搜索词>"]},不要输出任何其他内容。' +
+            `id 必须原样取自技能库,最多 ${MAX_AI_RECOMMENDATIONS} 个,按相关度降序;没有合适的就返回空数组。` +
+            'githubKeywords 给 1~3 个简短英文词(如 react、code-review、docker),将用于 topic:agent-skills 的 GitHub 仓库搜索。' +
+            '相关度相近时,优先 stars(社区热度)与 uses(用户历史使用次数)更高的技能。',
+        },
+        {
+          role: 'user',
+          content:
+            `开发需求:${requirement}` +
+            (input.projectName ? `\n项目名:${input.projectName}` : '') +
+            `\n技能库:\n${JSON.stringify(catalog)}`,
+        },
+      ];
+      const content = await chatCompletions(cfg, messages, 1024, fetchImpl);
+
+      const picked = parseAiRecommendations(content);
+      keywords = parseAiGithubKeywords(content);
+      const byId = new Map(skills.map((s) => [s.id, s]));
+      const seen = new Set<string>();
+      for (const p of picked) {
+        const entry = byId.get(p.id);
+        if (!entry || seen.has(p.id)) continue; // 幻觉 id / 重复 id 丢弃
+        seen.add(p.id);
+        items.push({ id: entry.id, name: entry.name, description: entry.description, reason: p.reason, stars: entry.stars, useCount: entry.useCount });
+        if (items.length >= MAX_AI_RECOMMENDATIONS) break;
+      }
+      if (items.length === 0) message = 'AI 没有给出匹配的推荐(可换需求描述重试)';
+    } catch (err) {
+      // 断网/超时/解析失败:本地推荐降级;联网推荐仍会尝试(关键词走需求兜底)
+      message = `AI 推荐不可用(已降级): ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
+  // ---- 2) GitHub 联网推荐(独立成败,不影响本地推荐结果)----
+  const gh = await searchGithubForRequirement(requirement, keywords, skills, fetchImpl);
+
+  return { items, github: gh.items, githubMessage: gh.message, model: cfg.model, message };
 }

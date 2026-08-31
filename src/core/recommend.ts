@@ -57,7 +57,7 @@ export async function detectTechStack(projectPath: string): Promise<string[]> {
 
 type FetchLike = typeof fetch;
 
-interface GithubRepo {
+export interface GithubRepo {
   full_name: string;
   name: string;
   html_url: string;
@@ -80,6 +80,19 @@ export async function searchGithubSkills(
   if (!res.ok) throw new Error(`GitHub API 返回 ${res.status}`);
   const data = (await res.json()) as { items?: GithubRepo[] };
   return data.items ?? [];
+}
+
+/** 带 24h 缓存的 GitHub 搜索:recommendForProject 与 ai.ts 的联网推荐共用 */
+export async function searchGithubSkillsCached(
+  query: string,
+  fetchImpl: FetchLike = fetch,
+): Promise<GithubRepo[]> {
+  let repos = await readCache(query);
+  if (!repos) {
+    repos = await searchGithubSkills(query, fetchImpl);
+    await writeCache(query, repos);
+  }
+  return repos;
 }
 
 function cacheFileFor(key: string): string {
@@ -128,11 +141,7 @@ export async function recommendForProject(
     const terms = [...stacks, ...keywords].slice(0, 3);
     const query = ['topic:agent-skills', ...terms].join(' ');
 
-    let repos = await readCache(query);
-    if (!repos) {
-      repos = await searchGithubSkills(query, fetchImpl);
-      await writeCache(query, repos);
-    }
+    const repos = await searchGithubSkillsCached(query, fetchImpl);
 
     const items: Recommendation[] = repos
       .sort((a, b) => b.stargazers_count - a.stargazers_count)

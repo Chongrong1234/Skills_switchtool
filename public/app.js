@@ -15,6 +15,7 @@ const state = {
   catalogKind: '',         // 推荐库当前类型过滤('' = 全部,'skill'/'mcp' 分流浏览与安装)
   catalogQuery: '',        // 推荐库当前搜索词
   serverCwd: null,         // /api/meta 缓存:服务进程 cwd,新建项目预填路径用
+  aiBox: null,             // 项目详情 AI 推荐区的最近结果 {projectId, requirement, rec}:render 重绘后保留,支持反复调用/多次操作
 };
 
 // ---------- 工具 ----------
@@ -224,6 +225,18 @@ function renderProjectDetail() {
     </div>
 
     <div class="section">
+      <h3>AI 推荐(可多次调用:模型读本地技能库 + 联网搜 GitHub)</h3>
+      <div class="form-row">
+        <textarea id="pd-ai-req" rows="2" placeholder="描述开发需求,例如:React + TypeScript 的后台管理系统,需要代码审查与测试"></textarea>
+      </div>
+      <div class="toolbar" style="margin-top:6px">
+        <button class="btn btn-sm btn-primary" id="pd-ai-run">获取 AI 推荐</button>
+        <span class="rdesc">需先在「设置」里配置模型与 API Key;GitHub 推荐可直接安装并绑定</span>
+      </div>
+      <div id="pd-ai"></div>
+    </div>
+
+    <div class="section">
       <h3>MCP 服务集(${projectMcps.length})</h3>
       <div class="panel">
         ${projectMcps.length ? projectMcps.map((m) => `
@@ -281,6 +294,17 @@ function renderProjectDetail() {
 
   document.getElementById('btn-add-mcp').addEventListener('click', () => openAddMcpModal(p));
   document.getElementById('btn-add-skill').addEventListener('click', () => openAddSkillModal(p));
+
+  // AI 推荐区:可多次调用;上次的结果(state.aiBox)在重绘后恢复
+  document.getElementById('pd-ai-run').addEventListener('click', () => run(async () => {
+    const requirement = document.getElementById('pd-ai-req').value.trim();
+    if (!requirement) return toast('请先用一两句话描述开发需求', 'err');
+    await runAiRecommend(document.getElementById('pd-ai'), p, requirement);
+  }));
+  if (state.aiBox?.projectId === p.id) {
+    document.getElementById('pd-ai-req').value = state.aiBox.requirement;
+    renderAiBox(document.getElementById('pd-ai'), p);
+  }
   document.getElementById('btn-apply').addEventListener('click', () => run(async () => {
     const r = await api('POST', `/api/projects/${p.id}/apply`);
     await loadAll();
@@ -521,11 +545,13 @@ function openAddMcpModal(project) {
     })));
 }
 
-// ---------- 新建项目(含推荐流程) ----------
-/** 新建项目后的 AI 推荐区:模型读本地技能库,按需求挑技能,勾选后并入项目技能集 */
-async function loadAiRecommend(modal, project, requirement) {
-  const box = modal.querySelector('#np-ai');
-  box.innerHTML = '<div class="spinner"></div><div class="loading-text">AI 正在阅读本地技能库并匹配需求…</div>';
+// ---------- AI 推荐(新建项目弹窗与项目详情共用;可反复调用) ----------
+/**
+ * 跑一次 AI 推荐:模型读本地技能库挑技能 + 联网搜 GitHub(关键词由模型给出,需求英文词兜底)。
+ * 结果存入 state.aiBox(项目详情重绘后仍在,支持多次绑定/安装操作),再渲染进 box。
+ */
+async function runAiRecommend(box, project, requirement) {
+  box.innerHTML = '<div class="spinner"></div><div class="loading-text">AI 正在阅读本地技能库,并联网搜索 GitHub…</div>';
   let rec;
   try {
     rec = await api('POST', '/api/ai/recommend', { requirement, projectName: project.name });
@@ -533,40 +559,103 @@ async function loadAiRecommend(modal, project, requirement) {
     box.innerHTML = `<div class="empty">AI 推荐失败: ${esc(err.message)}</div>`;
     return;
   }
-  if (!rec.items.length) {
-    box.innerHTML = `<div class="empty">${esc(rec.message || 'AI 暂无推荐')}</div>`;
+  state.aiBox = { projectId: project.id, requirement, rec };
+  renderAiBox(box, project);
+}
+
+/** 渲染 AI 推荐结果:本地库勾选绑定 + GitHub 联网推荐安装并绑定。已绑定/已入库的条目按最新状态禁用 */
+function renderAiBox(box, project) {
+  const rec = state.aiBox?.rec;
+  if (!rec) return;
+  if (!rec.items.length && !(rec.github || []).length) {
+    box.innerHTML = `<div class="empty">${esc(rec.message || rec.githubMessage || 'AI 暂无推荐')}</div>`;
     return;
   }
-  box.innerHTML = `
-    <h3 style="margin:14px 0 8px">AI 从本地技能库推荐(${esc(rec.model || '')})</h3>
-    <div class="rec-list">
-      ${rec.items.map((r) => `
-        <div class="rec-item">
-          <div class="rhead">
-            <label class="ai-pick"><input type="checkbox" data-ai-id="${esc(r.id)}" checked /> <span class="rname">${esc(r.name)}</span> ${hotTags(r)}</label>
-          </div>
-          <div class="rdesc">${esc(r.description)}</div>
-          ${r.reason ? `<div class="rreason">${esc(r.reason)}</div>` : ''}
-        </div>`).join('')}
-    </div>
-    <div class="rbtns" style="margin-top:8px">
-      <button class="btn btn-sm btn-primary" id="np-ai-bind">绑定选中技能到项目</button>
-    </div>`;
-  box.querySelector('#np-ai-bind').addEventListener('click', () => run(async () => {
-    const picked = [...box.querySelectorAll('input[data-ai-id]:checked')].map((x) => x.dataset.aiId);
+  const boundIds = new Set(project.skills);
+  const keywords = [...new Set((rec.github || []).map((g) => g.keyword))];
+  box.innerHTML =
+    (rec.items.length ? `
+      <h3 style="margin:14px 0 8px">本地技能库推荐(${esc(rec.model || '')})</h3>
+      <div class="rec-list">
+        ${rec.items.map((r) => `
+          <div class="rec-item">
+            <div class="rhead">
+              <label class="ai-pick"><input type="checkbox" data-ai-id="${esc(r.id)}" ${boundIds.has(r.id) ? 'checked disabled' : 'checked'} /> <span class="rname">${esc(r.name)}</span> ${hotTags(r)}${boundIds.has(r.id) ? ' <span class="tag">已绑定</span>' : ''}</label>
+            </div>
+            <div class="rdesc">${esc(r.description)}</div>
+            ${r.reason ? `<div class="rreason">${esc(r.reason)}</div>` : ''}
+          </div>`).join('')}
+      </div>
+      <div class="rbtns" style="margin-top:8px">
+        <button class="btn btn-sm btn-primary" data-ai-bind>绑定选中技能到项目</button>
+      </div>` : (rec.message ? `<div class="rdesc" style="margin-top:8px">${esc(rec.message)}</div>` : '')) +
+    ((rec.github || []).length ? `
+      <h3 style="margin:14px 0 8px">GitHub 联网推荐(按 star 排序;关键词: ${esc(keywords.join(', '))})</h3>
+      <div class="rec-list">
+        ${rec.github.map((g) => {
+          const installedIds = state.skills.filter((s) => s.id.startsWith(`${g.repo}:`)).map((s) => s.id);
+          const allBound = installedIds.length > 0 && installedIds.every((id) => boundIds.has(id));
+          const btnLabel = !installedIds.length ? '加入库并绑定' : allBound ? '已绑定 ✓' : '绑定到项目';
+          return `
+          <div class="rec-item">
+            <div class="rhead">
+              <span class="rname">${esc(g.repo)}</span>
+              <span class="rstars">★ ${g.stars}</span>
+            </div>
+            <div class="rdesc">${esc(g.description)}</div>
+            <div class="rreason">命中关键词: ${esc(g.keyword)}</div>
+            <div class="rbtns"><button class="btn btn-sm btn-primary" data-ai-gh="${esc(g.repo)}" ${allBound ? 'disabled' : ''}>${btnLabel}</button></div>
+          </div>`;
+        }).join('')}
+      </div>` : (rec.githubMessage ? `<div class="rdesc" style="margin-top:8px">${esc(rec.githubMessage)}</div>` : ''));
+
+  // 绑定本地库推荐(与现有技能集并集去重)
+  const bindBtn = box.querySelector('[data-ai-bind]');
+  if (bindBtn) bindBtn.addEventListener('click', () => run(async () => {
+    const picked = [...box.querySelectorAll('input[data-ai-id]:checked')].map((x) => x.dataset.aiId)
+      .filter((id) => !boundIds.has(id));
     if (!picked.length) return toast('未勾选任何技能', 'err');
     const latest = await api('GET', `/api/projects/${project.id}`);
     await api('POST', `/api/projects/${project.id}/skills`, {
       skillIds: [...new Set([...latest.skills, ...picked])],
     });
     await loadAll();
-    render(); // 刷新弹窗背后的项目详情(render 只动 #app 不动 #modal-root),关闭弹窗即见新技能集
-    box.querySelector('#np-ai-bind').disabled = true;
-    box.querySelector('#np-ai-bind').textContent = `已绑定 ${picked.length} 个 ✓`;
+    render(); // render 只动 #app 不动 #modal-root;项目详情重绘时结果区由 state.aiBox 恢复
+    bindBtn.disabled = true;
+    bindBtn.textContent = `已绑定 ${picked.length} 个 ✓`;
     toast(`已绑定 ${picked.length} 个技能,点「应用配置」生效`);
   }));
+
+  // GitHub 联网推荐:未入库 → 安装并绑定;已入库未绑定 → 直接绑定
+  box.querySelectorAll('[data-ai-gh]').forEach((btn) =>
+    btn.addEventListener('click', () => run(async () => {
+      btn.disabled = true;
+      const repo = btn.dataset.aiGh;
+      try {
+        let ids = state.skills.filter((s) => s.id.startsWith(`${repo}:`)).map((s) => s.id);
+        if (!ids.length) {
+          btn.textContent = '安装中…';
+          const installed = await apiWithProgress('POST', '/api/skills', { source: 'github', uri: repo });
+          ids = installed.map((s) => s.id);
+        }
+        const latest = await api('GET', `/api/projects/${project.id}`);
+        await api('POST', `/api/projects/${project.id}/skills`, {
+          skillIds: [...new Set([...latest.skills, ...ids])],
+        });
+        await loadAll();
+        render();
+        btn.textContent = '已加入 ✓';
+        toast(`已安装并绑定 ${ids.length} 个 skill 到项目`);
+      } catch (err) {
+        // 失败必须恢复按钮,否则会永远停在"安装中…";错误继续抛给 run() 弹 toast
+        btn.disabled = false;
+        btn.textContent = '加入库并绑定';
+        throw err;
+      }
+    })));
 }
 
+// ---------- 新建项目(含推荐流程) ----------
 function openNewProjectModal() {
   const modal = openModal(`
     <h2>新建项目</h2>
@@ -582,7 +671,7 @@ function openNewProjectModal() {
       <div class="agent-checks">${agentCheckboxList(state.agents.filter((a) => a.detected && a.id !== 'agents').map((a) => a.id))}</div>
       <div class="rdesc">已默认勾选本机检测到的 agent;通用互操作目录 agents 可按需手动勾选</div>
     </div>
-    <div class="form-row"><label>开发需求(可选;AI 将读本地技能库,按需求推荐匹配技能——需先在「设置」里配置模型与 API Key)</label>
+    <div class="form-row"><label>开发需求(可选;AI 将读本地技能库并联网搜 GitHub,按需求推荐匹配技能——需先在「设置」里配置模型与 API Key)</label>
       <textarea id="np-ai-req" rows="2" placeholder="例如:React + TypeScript 的后台管理系统,需要代码审查与测试"></textarea></div>
     <div id="np-ai"></div>
     <div id="np-recommend"></div>
@@ -674,8 +763,8 @@ function openNewProjectModal() {
       box.innerHTML = `<div class="empty">推荐加载失败: ${esc(err.message)}</div>`;
     }
 
-    // AI 推荐本地技能库:填了开发需求才触发(独立 try 之外,不受 GitHub 推荐成败影响)
-    if (requirement) await loadAiRecommend(modal, project, requirement);
+    // AI 推荐(本地技能库 + GitHub 联网):填了开发需求才触发(独立 try 之外,不受上方技术栈推荐成败影响)
+    if (requirement) await runAiRecommend(modal.querySelector('#np-ai'), project, requirement);
   }));
 }
 

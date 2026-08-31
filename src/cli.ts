@@ -241,6 +241,12 @@ leaf(
         } else {
           s += ` ${aiRec.message ?? '(无结果)'}`;
         }
+        if (aiRec.github.length) {
+          s += '\nGitHub 联网推荐(安装: ssw skill add --github <owner/repo>):' +
+            '\n' + aiRec.github.map((g) => `  ★${g.stars}  ${g.repo}  ${g.description}`).join('\n');
+        } else if (aiRec.githubMessage) {
+          s += `\n(GitHub 联网推荐: ${aiRec.githubMessage})`;
+        }
       }
       return s +
         (aiRec?.items.length
@@ -907,12 +913,18 @@ leaf(
         lines.push(`✓ ${item.id}  ${item.name}${hot}`);
         if (item.reason) lines.push(`    推荐理由: ${item.reason}`);
       }
+      if (r.github.length) {
+        lines.push('GitHub 联网推荐(未入库,安装: ssw skill add --github <owner/repo>):');
+        for (const g of r.github) lines.push(`  ★${g.stars}  ${g.repo}  ${g.description}${g.description ? '  ' : ''}(关键词: ${g.keyword})`);
+      } else if (r.githubMessage) {
+        lines.push(`(GitHub 联网推荐: ${r.githubMessage})`);
+      }
       if (bound.length) lines.push(`已并入项目技能集(现共 ${bound.length} 个);apply 生效: ssw project apply ${opts.bind}`);
       else if (r.items.length && !opts.bind) lines.push('绑定到项目: ssw ai recommend "<需求>" --bind <id|name>');
       return lines.join('\n');
     });
-    // 推荐通道本身失败(降级 message 且无结果)时退出码非零,便于脚本判断
-    if (!r.items.length) process.exitCode = 1;
+    // 推荐通道本身失败(降级 message 且本地/联网都无结果)时退出码非零,便于脚本判断
+    if (!r.items.length && !r.github.length) process.exitCode = 1;
   }),
 );
 

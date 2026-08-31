@@ -11,13 +11,15 @@ import {
   AiError,
   aiRecommendSkills,
   chatEndpoint,
+  fallbackGithubKeywords,
+  parseAiGithubKeywords,
   parseAiRecommendations,
   readAiConfig,
   testAiConnection,
   toPublicConfig,
   updateAiConfig,
 } from '../src/core/ai.js';
-import { writeRegistry } from '../src/core/registry.js';
+import { upsertSkill, writeRegistry } from '../src/core/registry.js';
 import type { SkillEntry } from '../src/core/types.js';
 
 let tmp: string;
@@ -43,13 +45,27 @@ async function seedSkills(): Promise<SkillEntry[]> {
   return skills;
 }
 
-/** 假 chat/completions:capture 记录请求细节供断言 */
-function mockAiFetch(content: string, capture?: { url?: unknown; body?: any; headers?: any }) {
-  return vi.fn(async (url: unknown, init: { body: string; headers: unknown }) => {
+/** 假 fetch:chat/completions 返回 content;api.github.com 返回 ghItems。capture 只记 chat 调用细节,ghQueries 记 GitHub 查询 */
+function mockAiFetch(
+  content: string,
+  capture?: { url?: unknown; body?: any; headers?: any; ghQueries?: string[] },
+  ghItems: unknown[] = [],
+) {
+  return vi.fn(async (url: unknown, init?: { body: string; headers: unknown }) => {
+    const u = String(url);
+    if (u.includes('api.github.com')) {
+      if (capture) (capture.ghQueries = capture.ghQueries ?? []).push(decodeURIComponent(u));
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ items: ghItems }),
+        text: async () => '',
+      };
+    }
     if (capture) {
       capture.url = url;
-      capture.body = JSON.parse(init.body);
-      capture.headers = init.headers;
+      capture.body = JSON.parse(init!.body);
+      capture.headers = init!.headers;
     }
     return {
       ok: true,
@@ -196,6 +212,94 @@ describe('aiRecommendSkills(网络层 mock)', () => {
     const r = await aiRecommendSkills({ requirement: 'x', fetchImpl: mockAiFetch('随便聊聊') });
     expect(r.items).toEqual([]);
     expect(r.message).toContain('没有给出');
+  });
+});
+
+describe('GitHub 联网推荐(关键词搜索 agent-skills 仓库;与本地推荐成败隔离)', () => {
+  const ghRepo = (full_name: string, stars: number) => ({
+    full_name,
+    name: full_name.split('/')[1],
+    html_url: `https://github.com/${full_name}`,
+    stargazers_count: stars,
+    description: `desc of ${full_name}`,
+  });
+
+  it('模型给 githubKeywords:按 topic:agent-skills 搜索、排除已入库、去重、按 star 降序', async () => {
+    await seedSkills();
+    // 已入库的 github 仓库应被排除
+    await upsertSkill({ id: 'o/in-lib:x', name: 'x', description: 'd', source: { type: 'github', uri: 'https://github.com/o/in-lib' }, tags: [], installedAt: new Date().toISOString() });
+    await updateAiConfig({ apiKey: 'sk-k' });
+    const capture: { ghQueries?: string[] } = {};
+    const content = JSON.stringify({
+      recommendations: [{ id: 'local:review', reason: 'r' }],
+      githubKeywords: ['React'],
+    });
+    const ghItems = [ghRepo('a/low', 100), ghRepo('o/in-lib', 500), ghRepo('b/high', 9000), ghRepo('b/high', 9000)];
+    const r = await aiRecommendSkills({ requirement: '做个后台', fetchImpl: mockAiFetch(content, capture, ghItems) });
+    expect(r.items.map((i) => i.id)).toEqual(['local:review']);
+    expect(capture.ghQueries).toHaveLength(1);
+    expect(capture.ghQueries![0]).toContain('topic:agent-skills react'); // 关键词小写化 + topic 限定
+    expect(r.github.map((g) => g.repo)).toEqual(['b/high', 'a/low']); // 排除已入库 + 去重 + 按 star 降序
+    expect(r.github[0]).toMatchObject({ url: 'https://github.com/b/high', keyword: 'react' });
+    expect(r.message).toBeUndefined();
+    expect(r.githubMessage).toBeUndefined();
+  });
+
+  it('模型没给关键词:用需求里的英文词兜底(中文词不进 GitHub 搜索)', async () => {
+    await seedSkills();
+    await updateAiConfig({ apiKey: 'sk-k' });
+    const capture: { ghQueries?: string[] } = {};
+    const content = JSON.stringify({ recommendations: [] });
+    const r = await aiRecommendSkills({ requirement: '做一个 react admin 后台', fetchImpl: mockAiFetch(content, capture, [ghRepo('a/x', 10)]) });
+    expect(capture.ghQueries!.some((q) => q.includes('react'))).toBe(true);
+    expect(capture.ghQueries!.some((q) => q.includes('admin'))).toBe(true);
+    expect(r.github.map((g) => g.repo)).toEqual(['a/x']);
+  });
+
+  it('GitHub 限流/断网:本地推荐保留,githubMessage 说明,互不影响', async () => {
+    await seedSkills();
+    await updateAiConfig({ apiKey: 'sk-k' });
+    const fetchImpl = (async (url: unknown) => {
+      if (String(url).includes('api.github.com')) {
+        return { ok: false, status: 403, json: async () => ({}), text: async () => 'rate limited' };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ choices: [{ message: { content: JSON.stringify({ recommendations: [{ id: 'local:test', reason: 'r' }], githubKeywords: ['docker'] }) } }] }),
+        text: async () => '',
+      };
+    }) as unknown as typeof fetch;
+    const r = await aiRecommendSkills({ requirement: 'x', fetchImpl });
+    expect(r.items.map((i) => i.id)).toEqual(['local:test']);
+    expect(r.github).toEqual([]);
+    expect(r.githubMessage).toContain('403');
+    expect(r.message).toBeUndefined();
+  });
+
+  it('技能库为空:跳过模型调用,仍返回 GitHub 联网推荐', async () => {
+    await updateAiConfig({ apiKey: 'sk-k' });
+    const capture: { url?: unknown; ghQueries?: string[] } = {};
+    const r = await aiRecommendSkills({ requirement: 'docker 部署', fetchImpl: mockAiFetch('{}', capture, [ghRepo('d/compose', 100)]) });
+    expect(r.items).toEqual([]);
+    expect(r.message).toContain('技能库为空');
+    expect(capture.url).toBeUndefined(); // 没发 chat 请求
+    expect(r.github.map((g) => g.repo)).toEqual(['d/compose']);
+  });
+});
+
+describe('联网关键词解析与兜底', () => {
+  it('parseAiGithubKeywords:小写化、去非法词、去重、最多 3 个;非对象输出 → 空', () => {
+    expect(parseAiGithubKeywords('{"githubKeywords":["React","docker","a","bad word!","react","' + 'x'.repeat(50) + '"]}')).toEqual(['react', 'docker']);
+    expect(parseAiGithubKeywords('[{"id":"x"}]')).toEqual([]);
+    expect(parseAiGithubKeywords('不是 JSON')).toEqual([]);
+    expect(parseAiGithubKeywords('{"recommendations":[]}')).toEqual([]);
+  });
+
+  it('fallbackGithubKeywords:取需求里的英文词(≥3 字符),最多 2 个', () => {
+    expect(fallbackGithubKeywords('做一个 React + TS 的后台')).toEqual(['react']);
+    expect(fallbackGithubKeywords('纯中文需求')).toEqual([]);
+    expect(fallbackGithubKeywords('k8s docker nginx')).toEqual(['k8s', 'docker']);
   });
 });
 
