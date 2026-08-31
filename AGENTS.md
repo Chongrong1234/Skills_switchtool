@@ -4,7 +4,7 @@
 
 ## 项目概述
 
-**Skills SwitchTool**(`skills-switchtool`,v1.4.1):项目中心化的 Agent Skills 管理工具。交互模式仿照 cc-switch:**中央存储 + 切换 + 写入目标工具配置位置 + 快照可回滚**。
+**Skills SwitchTool**(`skills-switchtool`,v1.4.2):项目中心化的 Agent Skills 管理工具。交互模式仿照 cc-switch:**中央存储 + 切换 + 写入目标工具配置位置 + 快照可回滚**。
 
 核心概念:
 
@@ -111,7 +111,9 @@ src/
                          #   (无公开仓库的托管 MCP 记 0);条目 subdir 适配合集仓库(skills/ 等子目录扫描根);
                          #   kind:'mcp' 条目的 mcp 载荷与 upsertMcp 对齐(env/headers 密钥为占位符),
                          #   installed 标记按 mcps.json 同名判断;listCatalogCategories() 分类统计
-                         #   (count/skills/mcps)供 GUI 标签角标、CLI catalog categories、TUI 分类切换共用
+                         #   (count/skills/mcps)供 GUI 标签角标、CLI catalog categories、TUI 分类切换共用;
+                         #   CatalogFilter.kind(catalogEntryKind 口径,缺省视为 skill)把 skills 与 MCP
+                         #   的浏览/安装分流:REST ?kind=、CLI --kind、TUI k 键、GUI 类型标签页共用
     doctor.ts            # 环境自检 runDoctor():数据目录可写/git 探活(spawn git --version,10s 超时)/
                          #   agent 检测(排除恒真的 'agents')/四个 JSON 数据文件健康度(缺失=首用 ok,
                          #   损坏=error 附修复 hint——运行时被 readJsonSafe 容错吞掉的损坏在这里暴露)+ 统计;
@@ -136,6 +138,7 @@ src/
                          #   GET /api/meta 暴露服务进程 cwd;POST /api/projects 的 path 缺省取 cwd;
                          #   /api/mcps CRUD + /api/projects/:id/mcps 绑定(校验名字在注册表存在);
                          #   /api/global GET/PUT + apply/unapply/rollback;/api/profile/export|import;
+                         #   GET /api/catalog[?category=&q=&kind=skill|mcp]:推荐库,kind 把 skills 与 MCP 分流;
                          #   GET /api/progress:git clone/pull 任务进度(前端进度条轮询);
                          #   GET /api/skills?rank=1[&forProject=id] 热度排序(不带 rank 保持原顺序);
                          #   POST /api/skills/adopt 收养 agent 目录既有 skills;
@@ -152,6 +155,7 @@ src/
                          #   各安装/绑定命令成功输出带「下一步」引导;
                          #   mcp list/add/remove(--command 与 --url 二选一,--env/--header 逗号分隔 KEY=V,--cwd 仅部分 agent 支持)
                          #   + project bind-mcp;catalog install 按条目 kind 分流:skill 整仓安装,mcp 写注册表;
+                         #   catalog 列表 --kind skill|mcp 把两类条目的浏览/安装分开(非法值报错);
                          #   catalog categories 分类清单(count/skills/mcps 统计,--category 的 id 来源);
                          #   skill init [--name --desc] [--content 文本|--file 路径](粘贴现成 SKILL.md 均可);
                          #   skill list 带 ★stars/用N次 热度标记;
@@ -160,7 +164,8 @@ src/
                          #   recommend "<需求>" [--bind 项目](并入技能集);project create --ai "<需求>" 创建即推荐并自动绑定;
                          #   profile export [--file](警告打 stderr)/ import <file>(导入 failed 非零时退出码 1)
   tui.ts                 # 终端交互面板:项目列表(光标项目附技能/MCP 绑定摘要行)+ ↑↓/Enter/a/u/r/i/s/m/g/c/d/q
-                         #   按键(g 全局共享视图内 a/u/r 作用于全局;推荐库视图内 c 循环切换分类过滤;
+                         #   按键(g 全局共享视图内 a/u/r 作用于全局;推荐库视图内 c 循环切换分类过滤、
+                         #   k 循环切换类型过滤——全部/仅 skills/仅 MCP,与分类过滤叠加,skills 与 MCP 分流;
                          #   i AI 推荐:readline 临时退出 raw 模式读一行需求,结果视图内 a 全部并入光标项目;
                          #   d 环境自检视图(d 重跑);技能库视图带 ★/用N 热度标记;技能库/MCP/推荐库只读);
                          #   stdin raw 模式 + ANSI 整帧重绘

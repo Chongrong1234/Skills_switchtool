@@ -105,6 +105,19 @@ describe('listCatalog 过滤与排序', () => {
     expect(byRepo.some((e) => e.id === first.id)).toBe(true);
     expect(listCatalog({ query: '绝不可能命中的词xyz' })).toEqual([]);
   });
+
+  it('按 kind 分流:skill / mcp 互不混入,缺省 kind 视为 skill,两者合计为全部', () => {
+    const skills = listCatalog({ kind: 'skill' });
+    const mcps = listCatalog({ kind: 'mcp' });
+    expect(skills.length).toBeGreaterThan(0);
+    expect(mcps.length).toBeGreaterThan(0);
+    expect(skills.every((e) => e.kind !== 'mcp')).toBe(true);
+    expect(mcps.every((e) => e.kind === 'mcp')).toBe(true);
+    expect(skills.length + mcps.length).toBe(CATALOG.length);
+    // kind 与 category 可叠加
+    const devMcps = listCatalog({ kind: 'mcp', category: 'dev' });
+    expect(devMcps.every((e) => e.kind === 'mcp' && e.category === 'dev')).toBe(true);
+  });
 });
 
 describe('listCatalogWithInstalled 标记', () => {

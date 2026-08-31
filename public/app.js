@@ -12,6 +12,7 @@ const state = {
   selectedProjectId: null, // 主区当前展示的项目
   catalog: null,           // 推荐库缓存 {categories, items},null = 未加载/已失效
   catalogCategory: '',     // 推荐库当前分类过滤('' = 全部)
+  catalogKind: '',         // 推荐库当前类型过滤('' = 全部,'skill'/'mcp' 分流浏览与安装)
   catalogQuery: '',        // 推荐库当前搜索词
   serverCwd: null,         // /api/meta 缓存:服务进程 cwd,新建项目预填路径用
 };
@@ -1015,10 +1016,11 @@ async function loadCatalog() {
   state.catalog = await api('GET', '/api/catalog');
 }
 
-/** 当前过滤条件下的条目(分类 + 关键词均在本地过滤,数据来自一次拉取) */
+/** 当前过滤条件下的条目(类型 + 分类 + 关键词均在本地过滤,数据来自一次拉取) */
 function catalogFiltered() {
   const q = state.catalogQuery.trim().toLowerCase();
   return state.catalog.items
+    .filter((e) => !state.catalogKind || (e.kind || 'skill') === state.catalogKind)
     .filter((e) => !state.catalogCategory || e.category === state.catalogCategory)
     .filter((e) => !q || `${e.id} ${e.name} ${e.description}`.toLowerCase().includes(q));
 }
@@ -1099,11 +1101,22 @@ function renderCatalog() {
     run(async () => { await loadCatalog(); render(); });
     return;
   }
+  // 类型分流计数(本地统计,忽略分类/搜索过滤):skills 与 MCP 的浏览/下载分开
+  const allItems = state.catalog.items;
+  const kindTabs = [
+    { kind: '', name: '全部', n: allItems.length },
+    { kind: 'skill', name: 'Skills', n: allItems.filter((e) => e.kind !== 'mcp').length },
+    { kind: 'mcp', name: 'MCP 服务', n: allItems.filter((e) => e.kind === 'mcp').length },
+  ];
   main.innerHTML = `
     <div class="main-title">推荐库</div>
     <div class="main-sub">精选高 star 的 skills 仓库与常用 MCP 服务:skill 一键安装到中央库(整仓登记);MCP 一键加入中央注册表,绑定项目后 apply 写入各 agent 配置</div>
     <div class="cat-toolbar">
       <input type="text" id="cat-q" placeholder="搜索名称 / 描述 / 仓库…" value="${esc(state.catalogQuery)}" />
+    </div>
+    <div class="cat-tabs">
+      ${kindTabs.map((k) => `
+        <button class="cat-tab ${state.catalogKind === k.kind ? 'active' : ''}" data-ckind="${k.kind}">${k.name} (${k.n})</button>`).join('')}
     </div>
     <div class="cat-tabs">
       <button class="cat-tab ${state.catalogCategory === '' ? 'active' : ''}" data-cat="">全部 (${state.catalog.items.length})</button>
@@ -1120,10 +1133,16 @@ function renderCatalog() {
     state.catalogQuery = e.target.value;
     refreshCatalogCards(main);
   });
-  main.querySelectorAll('.cat-tab').forEach((t) =>
+  main.querySelectorAll('[data-ckind]').forEach((t) =>
+    t.addEventListener('click', () => {
+      state.catalogKind = t.dataset.ckind;
+      main.querySelectorAll('[data-ckind]').forEach((x) => x.classList.toggle('active', x === t));
+      refreshCatalogCards(main);
+    }));
+  main.querySelectorAll('[data-cat]').forEach((t) =>
     t.addEventListener('click', () => {
       state.catalogCategory = t.dataset.cat;
-      main.querySelectorAll('.cat-tab').forEach((x) => x.classList.toggle('active', x === t));
+      main.querySelectorAll('[data-cat]').forEach((x) => x.classList.toggle('active', x === t));
       refreshCatalogCards(main);
     }));
   bindCatalogInstalls(main);

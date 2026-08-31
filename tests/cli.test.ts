@@ -395,6 +395,24 @@ describe('ssw CLI', () => {
     expect(items.every((e: { category: string }) => e.category === dev.id)).toBe(true);
   });
 
+  it('catalog --kind:skills 与 MCP 分流;非法值报错', async () => {
+    const skills = await cli('catalog', '--kind', 'skill', '--json');
+    expect(skills.code).toBe(0);
+    const skillItems = JSON.parse(skills.stdout).items;
+    expect(skillItems.length).toBeGreaterThan(0);
+    expect(skillItems.every((e: { kind?: string }) => e.kind !== 'mcp')).toBe(true);
+
+    const mcps = await cli('catalog', '--kind', 'mcp', '--json');
+    expect(mcps.code).toBe(0);
+    const mcpItems = JSON.parse(mcps.stdout).items;
+    expect(mcpItems.length).toBeGreaterThan(0);
+    expect(mcpItems.every((e: { kind?: string }) => e.kind === 'mcp')).toBe(true);
+
+    const bad = await cli('catalog', '--kind', 'nope');
+    expect(bad.code).not.toBe(0);
+    expect(bad.stderr).toContain('--kind');
+  });
+
   it('skill 支持 id|name 寻址:bind/remove 可用名称;不存在时报错含引导', async () => {
     await cli('skill', 'init', '--name', 'byname', '--desc', 'x');
     await cli('project', 'create', '--name', 'np', '--path', projectDir, '--agents', 'claude-code');

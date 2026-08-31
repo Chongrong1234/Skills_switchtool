@@ -634,12 +634,17 @@ leaf(
 const catalogCmd = leaf(
   program
     .command('catalog')
-    .description('推荐库:内置精选高 star skills 目录,按 star 降序')
+    .description('推荐库:内置精选高 star skills 与常用 MCP server 目录,按 star 降序')
     .option('--category <id>', '只看某个分类(id 见 ssw catalog categories)')
+    .option('--kind <kind>', '只看某类条目: skill|mcp(skills 与 MCP 分流浏览/安装)')
     .option('--q <keyword>', '关键词过滤(名称/描述/仓库)'),
 ).action(
-  wrap(async (cmd, opts: { category?: string; q?: string }) => {
-    const items = await listCatalogWithInstalled({ category: opts.category, query: opts.q });
+  wrap(async (cmd, opts: { category?: string; kind?: string; q?: string }) => {
+    if (opts.kind && opts.kind !== 'skill' && opts.kind !== 'mcp') {
+      throw new Error('--kind 只能是 skill 或 mcp');
+    }
+    const kind = opts.kind as 'skill' | 'mcp' | undefined;
+    const items = await listCatalogWithInstalled({ category: opts.category, kind, query: opts.q });
     const cats = listCatalogCategories();
     out(cmd, { categories: cats, items }, () => {
       const catName = (id: string) => cats.find((c) => c.id === id)?.name ?? id;
@@ -653,7 +658,7 @@ const catalogCmd = leaf(
         lines.push(`          ${e.description}`);
       }
       if (!items.length) lines.push('(无匹配条目)');
-      lines.push(`共 ${items.length} 条;分类清单: ssw catalog categories;安装: ssw catalog install <owner/repo|MCP名>`);
+      lines.push(`共 ${items.length} 条;分类清单: ssw catalog categories;只看一类: --kind skill|mcp;安装: ssw catalog install <owner/repo|MCP名>`);
       return lines.join('\n');
     });
   }),

@@ -4,6 +4,8 @@
  * - skill 仓库(缺省):安装走 library 的 github 流程(POST /api/skills 或 ssw skill add --github);
  * - MCP server(kind: 'mcp',常用软件):安装即把 mcp 载荷写入中央注册表(POST /api/mcps 或
  *   ssw mcp add),env/headers 里的密钥是占位符,需用户自行替换。
+ * 两类条目在数据里混排,浏览/下载按 kind 分流:listCatalog 的 filter.kind、REST ?kind=、
+ * CLI --kind、TUI k 键、GUI 类型标签页共用同一过滤口径(catalogEntryKind,缺省 kind 视为 skill)。
  *
  * 收录标准(2026-08 经 GitHub API + 仓库 tarball/git tree 逐一校验):
  * - 仓库真实存在,stars 取校验时实际值;无公开仓库的官方托管 MCP(如 Linear)stars 记 0,前端不显示 ★;
@@ -241,11 +243,19 @@ export const CATALOG: CatalogEntry[] = [
 export interface CatalogFilter {
   category?: string;
   query?: string;
+  /** 按条目类型过滤:skill 仓库 / MCP server;缺省返回两类混排(向后兼容) */
+  kind?: 'skill' | 'mcp';
 }
 
-/** 过滤 + 排序:默认按 stars 降序;query 大小写不敏感匹配 name/description/id */
+/** 条目类型:早期数据无 kind 字段,缺省视为 skill */
+export function catalogEntryKind(e: CatalogEntry): 'skill' | 'mcp' {
+  return e.kind === 'mcp' ? 'mcp' : 'skill';
+}
+
+/** 过滤 + 排序:默认按 stars 降序;query 大小写不敏感匹配 name/description/id;kind 把 skills 与 MCP 分流 */
 export function listCatalog(filter: CatalogFilter = {}): CatalogEntry[] {
   let items = [...CATALOG].sort((a, b) => b.stars - a.stars);
+  if (filter.kind) items = items.filter((e) => catalogEntryKind(e) === filter.kind);
   if (filter.category) items = items.filter((e) => e.category === filter.category);
   if (filter.query) {
     const q = filter.query.toLowerCase();

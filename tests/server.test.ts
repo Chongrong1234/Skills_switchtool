@@ -217,6 +217,23 @@ describe('server 校验(与 CLI 行为对齐)', () => {
     expect(filtered.data.items.every((e: { category: string }) => e.category === devId)).toBe(true);
   });
 
+  it('GET /api/catalog?kind=:skills 与 MCP 分流,互不混入;非法 kind 400', async () => {
+    const skills = await api('GET', '/api/catalog?kind=skill');
+    expect(skills.status).toBe(200);
+    expect(skills.data.items.length).toBeGreaterThan(0);
+    expect(skills.data.items.every((e: { kind?: string }) => e.kind !== 'mcp')).toBe(true);
+    const mcps = await api('GET', '/api/catalog?kind=mcp');
+    expect(mcps.status).toBe(200);
+    expect(mcps.data.items.length).toBeGreaterThan(0);
+    expect(mcps.data.items.every((e: { kind?: string }) => e.kind === 'mcp')).toBe(true);
+    // 两类合计 = 不带 kind 的全部条目
+    const all = await api('GET', '/api/catalog');
+    expect(skills.data.items.length + mcps.data.items.length).toBe(all.data.items.length);
+    const bad = await api('GET', '/api/catalog?kind=nope');
+    expect(bad.status).toBe(400);
+    expect(bad.data.error).toContain('kind');
+  });
+
   it('AI 端点:配置读写掩码不回原文;非法 baseUrl 400;recommend 校验与降级', async () => {
     // 初始:未配置 key,带预设清单,不含 apiKey 原文字段
     const init = await api('GET', '/api/ai/config');

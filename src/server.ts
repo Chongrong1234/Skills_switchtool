@@ -305,12 +305,17 @@ export function createApp(): express.Express {
   }));
 
   // ---- catalog 推荐库(内置精选目录,安装复用 POST /api/skills;categories 带条目统计)----
+  // ?kind=skill|mcp 把 skills 与 MCP 的浏览/下载分流(缺省混排,向后兼容)
   app.get('/api/catalog', h(async (req, res) => {
     const category = req.query.category ? String(req.query.category) : undefined;
     const query = req.query.q ? String(req.query.q) : undefined;
+    const kind = req.query.kind ? String(req.query.kind) : undefined;
+    if (kind !== undefined && kind !== 'skill' && kind !== 'mcp') {
+      return void res.status(400).json({ error: 'kind 只能是 skill 或 mcp' });
+    }
     res.json({
       categories: listCatalogCategories(),
-      items: await listCatalogWithInstalled({ category, query }),
+      items: await listCatalogWithInstalled({ category, query, kind }),
     });
   }));
 

@@ -60,7 +60,7 @@ ssw project switch api-server    # 激活项目 → 该项目的技能组合自�
 | 🌐 **全局共享** | 项目配方之外,还可把选定 skills 物化到各 agent 的**用户级**目录(`~/.claude/skills` 等):一次配置,该 agent 的所有项目共享 |
 | 📦 **配置库整体搬家** | `ssw profile export/import` 把技能库 + MCP + 项目档案 + 全局共享打成单文件,跨机器、跨平台共享同一份配置;导入幂等 |
 | 🤝 **收养既有 skills** | `ssw skill adopt` 把各 agent 目录里已存在的 skills 一键收进中央库,先纳管再统一分发 |
-| 🔍 **智能推荐 + 内置推荐库** | 识别项目技术栈推荐 GitHub 高 star skills;另内置 99 个精选 skill 仓库 + 25 个常用 MCP server / 13 大类(分类带条目统计),离线可浏览,一键安装;断网安静降级 |
+| 🔍 **智能推荐 + 内置推荐库** | 识别项目技术栈推荐 GitHub 高 star skills;另内置 99 个精选 skill 仓库 + 25 个常用 MCP server / 13 大类(分类带条目统计),skills 与 MCP 分流浏览、分开安装,离线可用;断网安静降级 |
 | 🤖 **AI 技能推荐** | 新建项目时填一句开发需求,AI 读本地技能库给出初步推荐供勾选绑定;模型/baseUrl/API Key 在设置里配,官方端点或 OpenAI 兼容中转站均可(预设 Kimi/DeepSeek/OpenAI/OpenRouter);未配置或断网安静降级 |
 | 🔥 **热度排序选配** | 给项目/全局共享选技能时,常用的排前面:记录每个 skill 的使用次数(绑定即计、只增不减)、GitHub 仓库 stars(安装/更新时采集),再结合项目技术栈与名称关键词匹配加权排序;AI 推荐也把 stars/用量作为相关度相近时的优先依据 |
 | 🖥️ **两种打开方式** | Electron 桌面 App 点点点、纯 CLI/终端面板——同一份核心,同一份状态 |
@@ -111,7 +111,7 @@ chmod +x "release/Skills SwitchTool-"*.AppImage
 ```bash
 skills    # 或 ssw —— ↑↓ 选项目,Enter 切换并 apply,
           # a apply / u unapply / r 回滚 / i AI 推荐(输入需求,结果视图内 a 并入项目) / s 技能库 / m MCP 库
-          # g 全局共享(视图内 a/u/r 作用于全局) / c 推荐库(视图内 c 切换分类) / d 环境自检 / q 退出
+          # g 全局共享(视图内 a/u/r 作用于全局) / c 推荐库(视图内 c 切换分类、k 切换 skills/MCP 类型) / d 环境自检 / q 退出
 ```
 
 非 TTY(管道、脚本)下裸跑则打印帮助。常用子命令:
@@ -143,7 +143,7 @@ ssw skill init --file SKILL.md          # 粘贴/导入现成 SKILL.md(--content
 ssw skill remove <id|name> / update [id|name]
 ssw skill export / import <code>        # 迁移码:批量搬家 skills
 ssw skill adopt --agent claude-code [--user|--path .]   # 把 agent 目录里既有的 skills 收进中央库
-ssw catalog [--category dev] [--q 关键词]   # 内置推荐库浏览(skill + MCP)
+ssw catalog [--category dev] [--kind skill|mcp] [--q 关键词]   # 内置推荐库浏览;--kind 把 skills 与 MCP 分流
 ssw catalog categories                  # 分类清单:每类条目数(skill/MCP 细分)
 ssw catalog install <owner/repo|mcp名>   # 一键安装推荐库条目
 ssw recommend [--path /abs/path] [--keywords a,b,c]            # 按技术栈智能推荐
