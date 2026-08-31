@@ -109,8 +109,8 @@ chmod +x "release/Skills SwitchTool-"*.AppImage
 `ssw`(别名 `skills`)是纯命令行 CLI。**不带任何参数启动时(TTY 下)进入交互式终端面板**:
 
 ```bash
-skills    # 或 ssw —— ↑↓ 选项目,Enter 切换并 apply,
-          # a apply / u unapply / r 回滚 / i AI 推荐(输入需求,结果视图内 a 并入项目) / s 技能库 / m MCP 库
+skills    # 或 ssw —— ↑↓ 选项目,Enter 切换并 apply,n 新建项目(名称/路径/agents/模式/可选 AI 需求),
+          # x 删除项目(y 确认) / a apply / u unapply / r 回滚 / i AI 推荐(输入需求,结果视图内 a 并入项目) / s 技能库 / m MCP 库
           # g 全局共享(视图内 a/u/r 作用于全局) / c 推荐库(视图内 c 切换分类、k 切换 skills/MCP 类型) / d 环境自检 / q 退出
 ```
 

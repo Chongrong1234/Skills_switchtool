@@ -2,13 +2,16 @@
  * tui.ts —— 终端交互面板(TUI):不带子命令启动 ssw/skills 时进入。
  * 零依赖实现:stdin raw 模式解析按键,ANSI 转义序列渲染,不引入 blessed/Ink。
  * 主视图 = 项目列表(仿 cc-switch 的切换面板):↑↓ 移动光标,Enter 切换并 apply;
+ * n 新建项目(依次询问名称/路径/agents/模式/开发需求——与 GUI 新建项目弹窗同口径,填了需求则 AI 推荐并整体绑定);
+ * x 删除项目档案(y 二次确认;只删档案不动磁盘文件,同 CLI project remove);
  * a apply / u unapply / r 回滚 / i AI 推荐 / s 技能库 / m MCP 库 / g 全局共享 / c 推荐库 / d 环境自检 / q 或 Ctrl-C 退出,Esc 返回项目视图。
  * 全局共享视图里 a/u/r 作用于全局(用户级)物化;推荐库视图内 c 循环切换分类过滤、k 循环切换类型过滤(全部 → 仅 skills → 仅 MCP,
  * skills 与 MCP 的浏览/下载分流);
  * AI 推荐视图(i 键输入开发需求后进入)内 a 把推荐全部并入光标项目;技能库/MCP 库/推荐库为只读视图(增删改走 CLI 子命令)。
  */
+import path from 'node:path';
 import readline from 'node:readline';
-import { adapters } from './adapters/index.js';
+import { adapters, getAdapter } from './adapters/index.js';
 import { aiRecommendSkills, type AiRecommendedSkill } from './core/ai.js';
 import { applyProject, unapplyProject } from './core/apply.js';
 import { CATALOG_CATEGORIES, listCatalogWithInstalled, type CatalogEntryWithInstalled } from './core/catalog.js';
@@ -21,7 +24,7 @@ import {
 } from './core/global.js';
 import { listSkills } from './core/library.js';
 import { listMcps } from './core/mcps.js';
-import { listProjects, setActiveProject, setProjectSkills } from './core/projects.js';
+import { createProject, deleteProject, listProjects, setActiveProject, setProjectSkills } from './core/projects.js';
 import { rollback } from './core/snapshot.js';
 import { runDoctor, type DoctorReport } from './core/doctor.js';
 import type { McpEntry, Project, SkillEntry } from './core/types.js';
@@ -104,7 +107,7 @@ export async function startTui(): Promise<void> {
       lines.push(`当前项目: ${active ? `${BOLD}${active.name}${RESET}  ${DIM}${active.path}${RESET}` : '(未激活)'}`);
       lines.push('');
       if (!state.projects.length) {
-        lines.push('(暂无项目,先用 ssw project create 创建)');
+        lines.push('(暂无项目,按 n 新建,或用 ssw project create)');
       }
       state.projects.forEach((p, i) => {
         const mark = p.id === state.activeProjectId ? '*' : ' ';
@@ -120,7 +123,7 @@ export async function startTui(): Promise<void> {
         lines.push(`${DIM}${cut(summary, cols - 2)}${RESET}`);
       }
       lines.push('');
-      lines.push(`${DIM}↑↓ 移动  Enter 切换并 apply  a apply  u unapply  r 回滚  i AI推荐  s 技能库  m MCP库  g 全局共享  c 推荐库  d 自检  q 退出${RESET}`);
+      lines.push(`${DIM}↑↓ 移动  Enter 切换并 apply  n 新建  x 删除  a apply  u unapply  r 回滚  i AI推荐  s 技能库  m MCP库  g 全局共享  c 推荐库  d 自检  q 退出${RESET}`);
     } else if (state.view === 'skills') {
       lines.push(`技能库(${state.skills.length}):`);
       lines.push('');
@@ -370,6 +373,70 @@ export async function startTui(): Promise<void> {
             return state.doctor.ok ? '✓ 自检通过' : '✗ 自检发现 error 级问题,见上方列表';
           });
           break;
+        case 'n': { // 新建项目:readline 依次询问,字段与 GUI 新建项目弹窗同口径(名称/路径/agents/模式/开发需求)
+          void (async () => {
+            const name = (await ask('项目名称(留空取消)> ')).trim();
+            if (!name) {
+              state.message = '已取消新建';
+              render();
+              return;
+            }
+            const pathInput = (await ask(`项目路径(缺省当前目录 ${process.cwd()})> `)).trim();
+            // agents 缺省取本机检测到的具体 agent(排除恒真 'agents'),与 CLI project create 同口径
+            const detected = adapters.filter((a) => a.id !== 'agents' && a.detect()).map((a) => a.id);
+            const agentsInput = (await ask(`目标 agents 逗号分隔(缺省检测值: ${detected.join(',') || '无'})> `)).trim();
+            const modeInput = (await ask('apply 模式 symlink/copy(缺省 symlink)> ')).trim();
+            const requirement = (await ask('开发需求(留空跳过;填了则 AI 读技能库推荐并绑定)> ')).trim();
+            let created = false;
+            await run(async () => {
+              const mode = modeInput || 'symlink';
+              if (mode !== 'symlink' && mode !== 'copy') throw new Error(`模式只能是 symlink 或 copy: ${mode}`);
+              const agentIds = agentsInput ? agentsInput.split(',').map((s) => s.trim()).filter(Boolean) : detected;
+              if (!agentIds.length) {
+                throw new Error(`未检测到任何 agent,请在 agents 一项显式填写(可用: ${adapters.map((a) => a.id).join(', ')})`);
+              }
+              for (const id of agentIds) {
+                if (!getAdapter(id)) throw new Error(`未知 agent: ${id}(可用: ${adapters.map((a) => a.id).join(', ')})`);
+              }
+              const p = await createProject({ name, path: path.resolve(pathInput || '.'), agents: agentIds, applyMode: mode });
+              created = true;
+              let extra = '';
+              if (requirement) {
+                const r = await aiRecommendSkills({ requirement, projectName: name });
+                if (r.items.length) {
+                  await setProjectSkills(p.id, r.items.map((s) => s.id));
+                  extra = `;AI 已推荐并绑定 ${r.items.length} 个技能`;
+                } else {
+                  extra = `;AI 推荐: ${r.message ?? '无结果'}`;
+                }
+              }
+              return `✓ 已创建项目「${p.name}」(${p.id.slice(0, 8)}…)${extra},Enter 切换并 apply`;
+            });
+            if (created) {
+              // 光标落到新项目(createProject 追加在列表末尾)
+              state.cursor = Math.max(0, state.projects.length - 1);
+              render();
+            }
+          })();
+          break;
+        }
+        case 'x': { // 删除项目档案:y 二次确认;只删档案不动磁盘文件(同 CLI project remove)
+          const p = currentProject();
+          if (!p) return;
+          void (async () => {
+            const ans = (await ask(`确认删除项目「${p.name}」?(仅删档案,不动磁盘文件)y/N> `)).trim().toLowerCase();
+            if (ans !== 'y' && ans !== 'yes') {
+              state.message = '已取消删除';
+              render();
+              return;
+            }
+            await run(async () => {
+              await deleteProject(p.id);
+              return `✓ 已删除项目「${p.name}」档案`;
+            });
+          })();
+          break;
+        }
         case 'i': { // AI 推荐:读一行开发需求 → 模型从技能库挑技能 → 进 AI 视图(a 绑定)
           const p = currentProject();
           if (!p) return;
