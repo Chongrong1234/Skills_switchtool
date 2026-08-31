@@ -106,9 +106,9 @@ describe('adoptFromAllAgents(一键收养所有 agent)', () => {
 
     const r = await adoptFromAllAgents({ scope: 'project', projectPath });
     expect(r.adopted.map((s) => s.id).sort()).toEqual(['local:p-skill', 'local:shared-one']);
-    // agents/copilot/opencode 同指 .agents/skills:注册表顺序里 agents 先扫,另两家记"同目录"
+    // agents/copilot/opencode/openclaw/amp 同指 .agents/skills:注册表顺序里 agents 先扫,其余记"同目录"
     const dupSkipped = r.skippedAgents.filter((s) => s.reason.includes('同目录')).map((s) => s.agent).sort();
-    expect(dupSkipped).toEqual(['copilot', 'opencode']);
+    expect(dupSkipped).toEqual(['amp', 'copilot', 'openclaw', 'opencode']);
 
     await expect(adoptFromAllAgents({ scope: 'project' })).rejects.toThrow(LibraryError);
   });

@@ -4,13 +4,13 @@
 
 ## 项目概述
 
-**Skills SwitchTool**(`skills-switchtool`,v1.4.8):项目中心化的 Agent Skills 管理工具。交互模式仿照 cc-switch:**中央存储 + 切换 + 写入目标工具配置位置 + 快照可回滚**。
+**Skills SwitchTool**(`skills-switchtool`,v1.4.9):项目中心化的 Agent Skills 管理工具。交互模式仿照 cc-switch:**中央存储 + 切换 + 写入目标工具配置位置 + 快照可回滚**。
 
 核心概念:
 
 - **中央库是唯一事实来源**:全部 skills 实体存放在 `~/.skills-switch/library/`(可用 `SSW_HOME` 环境变量覆盖,测试隔离用);MCP server 是纯配置,集中在 `mcps.json` 注册表(name 即唯一键)。
 - **项目是一等公民**:项目档案(`projects.json`)记录 `项目 ↔ 技能集 ↔ MCP 服务集 ↔ 目标 agents` 绑定与 `activeProjectId`。
-- **apply = 物化**:把项目技能集写入各 agent 的项目级 skills 目录(claude-code→`.claude/skills`、kimi-code→`.kimi-code/skills`、cursor→`.cursor/skills`、codex→`.codex/skills`、gemini-cli→`.gemini/skills`、windsurf→`.windsurf/skills`、roo-code→`.roo/skills`;agents/copilot/opencode 三家项目级都指向通用 `.agents/skills`——Agent Skills 开放规范的互操作路径,同时启用时幂等跳过)。默认 symlink(库改动即时生效),可选 copy;symlink 失败自动降级 copy 并告警。同名冲突的既有内容先移入快照再覆盖。MCP 服务集**合并**写入各 agent 的项目级配置(claude-code→`.mcp.json`,kimi-code→`.kimi-code/mcp.json`,cursor→`.cursor/mcp.json`,codex→`.codex/config.toml` 的 `[mcp_servers.*]` 段):保留用户已有条目、同名覆盖,已存在的配置文件先整体进快照再写。
+- **apply = 物化**:把项目技能集写入各 agent 的项目级 skills 目录(claude-code→`.claude/skills`、kimi-code→`.kimi-code/skills`、cursor→`.cursor/skills`、codex→`.codex/skills`、gemini-cli→`.gemini/skills`、windsurf→`.windsurf/skills`、roo-code→`.roo/skills`、qwen-code→`.qwen/skills`、trae→`.trae/skills`、factory-droid→`.factory/skills`、deepseek-harness→`.dsh/skills`、cline→`.cline/skills`、continue→`.continue/skills`、crush→`.crush/skills`;agents/copilot/opencode/openclaw/amp 五家项目级都指向通用 `.agents/skills`——Agent Skills 开放规范的互操作路径,同时启用时幂等跳过)。默认 symlink(库改动即时生效),可选 copy;symlink 失败自动降级 copy 并告警。同名冲突的既有内容先移入快照再覆盖。MCP 服务集**合并**写入各 agent 的项目级配置(claude-code→`.mcp.json`,kimi-code→`.kimi-code/mcp.json`,cursor→`.cursor/mcp.json`,codex→`.codex/config.toml` 的 `[mcp_servers.*]` 段,qwen-code→`.qwen/settings.json` 的 mcpServers 字段,trae→`.trae/mcp.json`,factory-droid→`.factory/mcp.json`):保留用户已有条目、同名覆盖,已存在的配置文件先整体进快照再写。
 - **全局(用户级)共享应用**(`src/core/global.ts`):把选定 skills 物化到各 agent 的用户级 skills 目录(`~/.claude/skills` 等,即适配器的 `userSkillsDir()`),一次配置、该 agent 的所有项目共享。档案存 `global.json`,快照挂在固定名 `__global__` 下,复用 apply.ts 的物化/移除原语与 snapshot.rollback。**MCP 是项目级概念,全局共享只管 skills**。CLI(`ssw global`)、REST(`/api/global*`)、桌面 GUI(「全局共享」视图)、TUI(g 键)均已接入。
 - **配置库导出/导入**(`src/core/profile.ts`):`ssw-profile@1` 单文件 bundle(skills 注册表 + MCP + 项目档案 + 全局档案 + local 技能实体 base64),跨机器/跨平台整体搬家;导入幂等——github 按仓库去重重克隆、local 文件落库带路径穿越防护、项目 id 冲突换新 id、`activeProjectId` 与全局档案仅在本机空缺时采用。
 - **收养既有 skills**(library.ts `adoptFromAgent` / `adoptFromAllAgents`):把 agent 用户级/项目级 skills 目录里已存在的 skills 收进中央库(跳过指向库内的 symlink 与同名条目),先纳管再统一分发;`adoptFromAllAgents` 一键扫描所有 agent(同名跨 agent 去重、同目录按 realpath 只扫一次、未安装/无目录记 skippedAgents 不报错);桌面 App 启动时(startServer)自动做用户级收养,打开即在技能库看到本机已配置的 skills。
@@ -148,11 +148,16 @@ src/
                          #   用户级 = ~/<homeDir>/skills;
                          #   jsonMcpSupport():mcpServers JSON 系 MCP 支持快捷构造,remoteStyle 区分远端条目写法
                          #   (claude 带 type/http+sse,kimi sse 用 transport,plain 仅 url;withCwd 仅 kimi)
-    claude-code.ts kimi-code.ts cursor.ts codex.ts   # 声明 mcp 支持的四家(配置目标见上)
+    claude-code.ts kimi-code.ts cursor.ts codex.ts qwen-code.ts trae.ts factory-droid.ts
+                         # 声明 mcp 支持的七家(配置目标见上;qwen 远端 http 用 httpUrl 键、sse 用 url,
+                         #   factory 条目带 type 字段,两家为自定义 toServerConfig;trae 用 jsonMcpSupport plain)
     agents.ts            # 通用目录 .agents/skills(开放规范互操作路径;非具体应用,detect 恒 true)
-    gemini-cli.ts copilot.ts windsurf.ts opencode.ts roo-code.ts
-                         # 无 MCP 支持的五家(apply MCP 时跳过并告警);copilot/opencode 项目级同指 .agents/skills
-    index.ts             # adapters 注册表(10 个)+ getAdapter(id)
+    gemini-cli.ts copilot.ts windsurf.ts opencode.ts roo-code.ts openclaw.ts deepseek-harness.ts
+    cline.ts continue.ts crush.ts amp.ts
+                         # 无 MCP 支持的十二家(apply MCP 时跳过并告警);copilot/opencode/openclaw/amp
+                         #   项目级同指 .agents/skills;Goose/OpenHands/Grok CLI 因 skills 两级都走
+                         #   .agents/skills 已被 agents 适配器覆盖,不单独设适配器
+    index.ts             # adapters 注册表(19 个)+ getAdapter(id)
   server.ts              # Express 应用:createApp(),REST API + 托管 public/;统一错误格式 { "error": "..." };
                          #   回环防护中间件:Host 必须指向 127.0.0.1/localhost(防 DNS rebinding),
                          #   带跨站 Origin 的请求一律 403(防恶意网页 simple request 跨域打写端点);
@@ -241,7 +246,7 @@ electron-builder.yml     # 打包配置:Linux AppImage + Windows NSIS(中文安�
 - 测试文件在 `tests/*.test.ts`,每个 core 模块一个对应文件,外加:`platform.test.ts`(Windows 专项:symlink EPERM 降级 copy、git 不在 PATH 的可读报错、Windows 保留名拒绝)、`server.test.ts`(起真实 HTTP 服务验证校验逻辑与 CLI 对齐)、`cli.test.ts`(端到端,用 `child_process` 跑**编译产物** `dist/cli.js`,`beforeAll` 里先自动跑 `npm run build`;Windows 上改用 `npm.cmd` 且必须带 `shell: true`——Node ≥18.20/20.12 起无 shell 直接 spawn `.cmd` 会抛 EINVAL,只换名字绕不过)。
 - **隔离约定(必须遵守)**:测试在 `beforeEach` 里把 `process.env.SSW_HOME` 指向 `fs.mkdtemp` 临时目录,`afterEach` 里删除该环境变量并 `rm` 临时目录——绝不触碰真实 `~/.skills-switch`。涉及真实文件系统的测试保持串行(这也是 `pool: 'forks'` 的原因)。`global.test.ts` 额外用 `vi.spyOn(os, 'homedir')` 指到临时目录,绝不触碰真实 home。
 - 网络相关测试注入假 `fetch`(`recommendForProject(path, name, fetchImpl)` 的第三参、`aiRecommendSkills({ ..., fetchImpl })` 与 `testAiConnection(overrides, fetchImpl)`),不打真实 GitHub/模型 API。
-- 提交改动前跑 `npm test`,当前基线:**18 个文件 205 个用例全绿**。push/PR 由 `.github/workflows/ci.yml` 跑三平台 × Node 18/20/22。
+- 提交改动前跑 `npm test`,当前基线:**18 个文件 206 个用例全绿**。push/PR 由 `.github/workflows/ci.yml` 跑三平台 × Node 18/20/22。
 
 ## 安全注意事项
 

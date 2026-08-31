@@ -205,8 +205,9 @@ describe('ssw CLI', () => {
     expect(r.code).toBe(0);
     const agents = JSON.parse(r.stdout);
     expect(agents.map((a: { id: string }) => a.id)).toEqual([
-      'claude-code', 'kimi-code', 'cursor', 'codex',
+      'claude-code', 'kimi-code', 'cursor', 'codex', 'qwen-code', 'trae', 'factory-droid',
       'agents', 'gemini-cli', 'copilot', 'windsurf', 'opencode', 'roo-code',
+      'openclaw', 'deepseek-harness', 'cline', 'continue', 'crush', 'amp',
     ]);
     expect(typeof agents[0].detected).toBe('boolean');
   });

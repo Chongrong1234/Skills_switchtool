@@ -3,6 +3,19 @@
 本项目遵循语义化版本;版本号单一来源是 `package.json`。
 发布走 `npm run release`(干净工作区检查 → 全量测试 → 打 tag → 推送,tag 触发三平台 Release 构建)。
 
+## v1.4.9(2026-08-31)
+
+新增 9 个主流 agent 框架适配器(10 → 19 家;目录约定全部来自各官方文档逐一核实,不靠猜):
+
+- **OpenClaw**(自托管个人 AI 助手网关):检测 `~/.openclaw`,用户级 `~/.openclaw/skills`,项目级走开放规范互操作路径 `.agents/skills`
+- **DeepSeek Harness**(`dsh`,DeepSeek 官方 agent harness):`.dsh/skills` 项目级 + 用户级
+- **Qwen Code**(阿里):`.qwen/skills` 两级 + 项目级 MCP(`.qwen/settings.json` 的 `mcpServers`,远端 http 用 `httpUrl` 键)
+- **Trae**(字节):`.trae/skills` 两级 + 项目级 MCP(`.trae/mcp.json`)
+- **Factory Droid**:`.factory/skills` 两级 + 项目级 MCP(`.factory/mcp.json`,条目带 `type` 字段)
+- **Cline** / **Continue** / **Crush** / **Amp**:skills 目录各就各位(Crush/Amp 用户级走 XDG `~/.config/...`;Amp 项目级用 `.agents/skills` 互操作路径)
+- MCP 配置为 YAML/命令式/仅用户级的(dsh、OpenClaw、Cline、Continue、Crush、Amp)不声明 MCP 支持,apply MCP 时跳过并告警
+- Goose / OpenHands / Grok CLI 的 skills 两级都走 `.agents/skills`,已被通用 `agents` 适配器覆盖,不重复设适配器
+
 ## v1.4.8(2026-08-31)
 
 一键收养本机所有 agent 的既有 skills:
