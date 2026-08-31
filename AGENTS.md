@@ -217,4 +217,4 @@ electron-builder.yml     # 打包配置:Linux AppImage + Windows NSIS(中文安�
 - 不要把 `SSW_HOME` 指向的目录当作可信输入边界——它存放的就是本工具的全部状态,损坏时要容错而不是崩溃。
 - AI 配置的 apiKey **明文存于** `ai.json`(与各家 CLI 的凭据文件同级风险):服务仅监听 127.0.0.1,REST/日志/导出(profile bundle 不含 ai.json)都不得回传 key 原文,GET /api/ai/config 只回掩码。
 
-每次修改界面或增加功能，要同步增加所有release版本功能,并在确认正确后直接提交，核心产品是appimage和cli，不需要做web
+每次修改界面或增加功能，要同步增加所有release版本功能,并在确认正确后直接提交，核心产品是appimage和cli，不需要做web，不增添功能的提交覆盖原版本即可，功能新增提交再迭代小版本

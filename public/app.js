@@ -560,6 +560,7 @@ async function loadAiRecommend(modal, project, requirement) {
       skillIds: [...new Set([...latest.skills, ...picked])],
     });
     await loadAll();
+    render(); // 刷新弹窗背后的项目详情(render 只动 #app 不动 #modal-root),关闭弹窗即见新技能集
     box.querySelector('#np-ai-bind').disabled = true;
     box.querySelector('#np-ai-bind').textContent = `已绑定 ${picked.length} 个 ✓`;
     toast(`已绑定 ${picked.length} 个技能,点「应用配置」生效`);
@@ -658,6 +659,7 @@ function openNewProjectModal() {
                 skillIds: [...latest.skills, ...installed.map((s) => s.id)],
               });
               await loadAll();
+              render(); // 同步刷新弹窗背后的项目详情技能集
               btn.textContent = '已加入 ✓';
               toast(`已安装 ${installed.length} 个 skill 并绑定到项目`);
             } catch (err) {
