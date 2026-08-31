@@ -233,6 +233,8 @@ body {
 .rec-item .rdesc { color: var(--text-dim); font-size: 12px; margin-top: 4px; }
 .rec-item .rreason { color: var(--accent-hover); font-size: 12px; margin-top: 4px; }
 .rec-item .rbtns { margin-top: 8px; }
+/* 「已添加」禁用态(从库中添加弹窗:添加后不关窗,按钮置灰标注) */
+.rec-item .btn[disabled] { opacity: 0.55; cursor: default; }
 
 .spinner {
   width: 22px; height: 22px;

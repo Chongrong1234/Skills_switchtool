@@ -508,10 +508,20 @@ function openAddSkillModal(project) {
     </div>` : '<div class="empty">库中没有更多可添加的技能</div>';
     body.querySelectorAll('[data-add]').forEach((btn) =>
       btn.addEventListener('click', () => run(async () => {
-        await api('POST', `/api/projects/${project.id}/skills`, { skillIds: [...project.skills, btn.dataset.add] });
+        // 添加后不关弹窗(点「关闭」/遮罩才退出),方便连续添加大量技能;
+        // 点击即禁用 + 先本地入列再发请求:快速连点不同行时后一次基于最新集合,不会冲掉前一次
+        btn.disabled = true;
+        project.skills.push(btn.dataset.add);
+        try {
+          await api('POST', `/api/projects/${project.id}/skills`, { skillIds: project.skills });
+        } catch (err) {
+          project.skills = project.skills.filter((id) => id !== btn.dataset.add);
+          btn.disabled = false;
+          throw err;
+        }
+        btn.textContent = '已添加'; // 行保留在列表里,标注已添加
         await loadAll();
-        closeModal();
-        render();
+        render(); // render 只动 #app 不动 #modal-root,弹窗保持打开
         toast('已添加到项目技能集');
       })));
   });
@@ -1362,10 +1372,19 @@ function openAddGlobalSkillModal() {
     </div>` : '<div class="empty">库中没有更多可添加的技能</div>';
     body.querySelectorAll('[data-add]').forEach((btn) =>
       btn.addEventListener('click', () => run(async () => {
-        await api('PUT', '/api/global', { skills: [...g.skills, btn.dataset.add] });
+        // 与项目版同款:添加后不关弹窗,按钮标注「已添加」;先本地入列防连点互冲
+        btn.disabled = true;
+        g.skills.push(btn.dataset.add);
+        try {
+          await api('PUT', '/api/global', { skills: g.skills });
+        } catch (err) {
+          g.skills = g.skills.filter((id) => id !== btn.dataset.add);
+          btn.disabled = false;
+          throw err;
+        }
+        btn.textContent = '已添加';
         await loadAll();
-        closeModal();
-        render();
+        render(); // render 只动 #app 不动 #modal-root,弹窗保持打开
         toast('已添加到全局技能集');
       })));
   });

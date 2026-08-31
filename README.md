@@ -6,7 +6,7 @@
 
 ### 按项目管理 Agent Skills:一个项目一套技能组合,模型不再调错技能
 
-[![Version](https://img.shields.io/badge/version-1.4.9-blue.svg)](https://github.com/Chongrong1234/Skills_switchtool/releases)
+[![Version](https://img.shields.io/badge/version-1.4.10-blue.svg)](https://github.com/Chongrong1234/Skills_switchtool/releases)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](https://nodejs.org)
 [![Runtime Deps](https://img.shields.io/badge/runtime%20deps-2-orange.svg)](package.json)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%C2%B7%20Windows%20%C2%B7%20macOS-lightgrey.svg)](electron-builder.yml)
@@ -68,14 +68,14 @@ ssw project switch api-server    # 激活项目 → 该项目的技能组合自�
 
 ## 下载(从头开始,复制粘贴即用)
 
-所有发布版本都在 [GitHub Releases](https://github.com/Chongrong1234/Skills_switchtool/releases) 页面。以下命令均可直接复制粘贴;示例用最新版 **v1.4.9**,下载历史版本把版本号换掉即可(现有:`v1.4.9`、`v1.4.5`、`v1.2.0`)。
+所有发布版本都在 [GitHub Releases](https://github.com/Chongrong1234/Skills_switchtool/releases) 页面。以下命令均可直接复制粘贴;示例用最新版 **v1.4.10**,下载历史版本把版本号换掉即可(现有:`v1.4.10`、`v1.4.5`、`v1.2.0`)。
 
 ### Linux 桌面版(AppImage)
 
 ```bash
 # 下载
 curl -L -o Skills.SwitchTool.AppImage \
-  https://github.com/Chongrong1234/Skills_switchtool/releases/download/v1.4.9/Skills.SwitchTool-1.4.9.AppImage
+  https://github.com/Chongrong1234/Skills_switchtool/releases/download/v1.4.10/Skills.SwitchTool-1.4.10.AppImage
 
 # 赋可执行权限并运行(也可在文件管理器里双击)
 chmod +x Skills.SwitchTool.AppImage
@@ -95,13 +95,13 @@ url=$(curl -s https://api.github.com/repos/Chongrong1234/Skills_switchtool/relea
 
 ### Windows 桌面版(NSIS 安装包,中文安装向导)
 
-浏览器直接下载:[Skills.SwitchTool.Setup.1.4.9.exe](https://github.com/Chongrong1234/Skills_switchtool/releases/download/v1.4.9/Skills.SwitchTool.Setup.1.4.9.exe),双击按向导安装(可选安装目录)。
+浏览器直接下载:[Skills.SwitchTool.Setup.1.4.10.exe](https://github.com/Chongrong1234/Skills_switchtool/releases/download/v1.4.10/Skills.SwitchTool.Setup.1.4.10.exe),双击按向导安装(可选安装目录)。
 
 或在 PowerShell 中复制粘贴:
 
 ```powershell
 curl.exe -L -o Skills.SwitchTool.Setup.exe `
-  "https://github.com/Chongrong1234/Skills_switchtool/releases/download/v1.4.9/Skills.SwitchTool.Setup.1.4.9.exe"
+  "https://github.com/Chongrong1234/Skills_switchtool/releases/download/v1.4.10/Skills.SwitchTool.Setup.1.4.10.exe"
 .\Skills.SwitchTool.Setup.exe        # 向导式安装;静默安装用 .\Skills.SwitchTool.Setup.exe /S
 ```
 
@@ -109,7 +109,7 @@ curl.exe -L -o Skills.SwitchTool.Setup.exe `
 
 ```bash
 curl -L -o Skills.SwitchTool.dmg \
-  https://github.com/Chongrong1234/Skills_switchtool/releases/download/v1.4.9/Skills.SwitchTool-1.4.9-arm64.dmg
+  https://github.com/Chongrong1234/Skills_switchtool/releases/download/v1.4.10/Skills.SwitchTool-1.4.10-arm64.dmg
 open Skills.SwitchTool.dmg    # 拖进「应用程序」;未签名,首次打开需右键 →「打开」
 ```
 

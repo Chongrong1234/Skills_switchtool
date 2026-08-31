@@ -4,7 +4,7 @@
 
 ## 项目概述
 
-**Skills SwitchTool**(`skills-switchtool`,v1.4.9):项目中心化的 Agent Skills 管理工具。交互模式仿照 cc-switch:**中央存储 + 切换 + 写入目标工具配置位置 + 快照可回滚**。
+**Skills SwitchTool**(`skills-switchtool`,v1.4.10):项目中心化的 Agent Skills 管理工具。交互模式仿照 cc-switch:**中央存储 + 切换 + 写入目标工具配置位置 + 快照可回滚**。
 
 核心概念:
 
@@ -217,6 +217,8 @@ public/                  # 原生单页应用(index.html / app.js / style.css),�
                          #   GitHub 联网推荐一键安装并绑定,已绑定/已入库禁用态);
                          #   设置弹窗含 AI 配置(预设/baseUrl/模型/Key + 测连);
                          #   MCP 服务页每个 server 带「设置」按钮,弹窗编辑配置(名称锁定,POST /api/mcps 同名 upsert 保存);
+                         #   「从库中添加技能」弹窗(项目/全局共享)添加后不关窗、该行按钮变「已添加」禁用态,
+                         #   方便连续添加大量技能,点「关闭」/遮罩才退出(先本地入列再发请求,防连点互冲);
                          #   收养弹窗支持选「全部 agent」(选中自动切用户级,按 agent 分组展示结果)
 scripts/                 # make-icon.mjs(生成图标)、build-cli.mjs(esbuild 打 CLI 单文件,注入 createRequire + __SSW_VERSION__)、
                          #   release.mjs(npm run release:干净工作区检查 → 全量测试 → 打 tag → push main+tag)
