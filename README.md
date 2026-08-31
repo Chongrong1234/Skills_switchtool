@@ -11,7 +11,7 @@
 [![Runtime Deps](https://img.shields.io/badge/runtime%20deps-2-orange.svg)](package.json)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%C2%B7%20Windows%20%C2%B7%20macOS-lightgrey.svg)](electron-builder.yml)
 
-**Electron 桌面 App · 纯 CLI(含终端面板),共享同一份数据**
+**Electron 桌面 App · CLI 终端可视化面板,共享同一份数据**
 
 </div>
 
@@ -63,7 +63,7 @@ ssw project switch api-server    # 激活项目 → 该项目的技能组合自�
 | 🔍 **智能推荐 + 内置推荐库** | 识别项目技术栈推荐 GitHub 高 star skills;另内置 111 个精选 skill 仓库 + 26 个常用 MCP server / 13 大类(分类带条目统计),skills 与 MCP 分流浏览、分开安装,离线可用;断网安静降级 |
 | 🤖 **AI 技能推荐** | 填一句开发需求,AI 读本地技能库给出推荐供勾选绑定,并**联网搜 GitHub** 相关仓库(模型给搜索关键词,需求英文词兜底;可一键安装并绑定);新建项目与**项目详情页可多次调用**;模型/baseUrl/API Key 在设置里配,官方端点或 OpenAI 兼容中转站均可(预设 Kimi/DeepSeek/OpenAI/OpenRouter);未配置或断网安静降级 |
 | 🔥 **热度排序选配** | 给项目/全局共享选技能时,常用的排前面:记录每个 skill 的使用次数(绑定即计、只增不减)、GitHub 仓库 stars(安装/更新时采集),再结合项目技术栈与名称关键词匹配加权排序;AI 推荐也把 stars/用量作为相关度相近时的优先依据 |
-| 🖥️ **两种打开方式** | Electron 桌面 App 点点点、纯 CLI/终端面板——同一份核心,同一份状态 |
+| 🖥️ **两种打开方式** | Electron 桌面 App 点点点、CLI 终端可视化面板——同一份核心,同一份状态 |
 | 🪶 **极致轻量** | 运行时仅 2 个依赖(express + commander);CLI 可打成零依赖单文件,拷到服务器即用 |
 
 ## 下载(从头开始,复制粘贴即用)
@@ -113,7 +113,7 @@ curl -L -o Skills.SwitchTool.dmg \
 open Skills.SwitchTool.dmg    # 拖进「应用程序」;未签名,首次打开需右键 →「打开」
 ```
 
-### 服务器 / 纯 CLI(零依赖单文件)
+### 服务器 / CLI 单文件(零依赖)
 
 CLI 单文件不随 Release 发布,从源码构建一次即可(只需 Node ≥ 18):
 
@@ -134,6 +134,8 @@ npm run dist:cli            # 产出 release/cli/ssw.mjs:零依赖,拷到任意�
 ### 安装与构建
 
 ```bash
+git clone https://github.com/Chongrong1234/Skills_switchtool.git
+cd Skills_switchtool
 npm install        # 安装依赖(运行时依赖仅 express + commander)
 npm run build      # tsc 编译到 dist/
 npm test           # vitest 全量测试
@@ -167,57 +169,25 @@ chmod +x "release/Skills SwitchTool-"*.AppImage
 
 在容器/受限环境(或部分无内核沙箱支持的系统)中,Electron 可能需要追加 `--no-sandbox` 才能启动。
 
-### CLI(服务器版)
+### CLI(终端可视化面板)
 
-`ssw`(别名 `skills`)是纯命令行 CLI。**不带任何参数启动时(TTY 下)进入交互式终端面板**:
-
-```bash
-skills    # 或 ssw —— ↑↓ 选项目,Enter 切换并 apply,n 新建项目(名称/路径/agents/模式/可选 AI 需求),
-          # x 删除项目(y 确认) / a apply / u unapply / r 回滚 / i AI 推荐(输入需求,结果视图内 a 并入项目) / s 技能库 / m MCP 库
-          # g 全局共享(视图内 a/u/r 作用于全局) / c 推荐库(视图内 c 切换分类、k 切换 skills/MCP 类型) / d 环境自检 / q 退出
-```
-
-非 TTY(管道、脚本)下裸跑则打印帮助。常用子命令:
+CLI(`ssw`,别名 `skills`)的主打开方式是**交互式终端面板**:在终端里不带任何参数直接运行即进入,日常操作全部在面板里完成:
 
 ```bash
-ssw doctor                              # 环境自检:数据目录/git/agent 检测/数据文件健康度,附修复建议
-ssw agents                              # 各 agent 适配器及 detected 状态
-ssw project list                        # 项目列表,* 为当前激活项
-ssw project create --name X [--agents claude-code,kimi-code] [--path /abs/path] [--mode symlink|copy]
-                                        # --agents 缺省取本机检测到的 agent;--path 缺省取当前目录
-                                        # [--ai "开发需求"]:AI 读技能库推荐并自动绑定(需先 ssw ai config 配 key)
-ssw ai config [--preset kimi|deepseek|openai|openrouter] [--base-url X] [--model Y] [--api-key Z]
-                                        # 查看/设置 AI 配置(不带选项 = 查看;baseUrl 可填中转站)
-ssw ai test                             # 测试 AI 连接(最小 chat 请求)
-ssw ai recommend "<开发需求>" [--bind <id|name>]   # AI 从技能库推荐;--bind 并入项目技能集
-ssw project switch <id|name>            # 设为当前项目并 apply
-ssw project apply / unapply / rollback [id|name]
-ssw project bind <id|name> <skillId|name...> # 设置项目技能集(整体替换;skill 可用名称简写)
-ssw project bind-mcp <id|name> <mcpName...>   # 设置项目 MCP 服务集(整体替换)
-ssw mcp list
-ssw mcp add --name X --command npx [--args -y,pkg] [--env K=V,...]   # stdio 本地服务
-ssw mcp add --name X --url https://... [--transport sse] [--header K=V,...]  # 远端服务
-ssw mcp remove <name>                        # 删 server 并解除各项目绑定
-ssw skill list                          # 带 ★stars 与使用次数热度标记
-ssw skill add --github <owner/repo 或 URL> [--subdir skills]   # 合集仓库用 --subdir 指定扫描根
-ssw skill add --local /path/to/skill
-ssw skill init --name X --desc "..."    # 自建 skill 脚手架
-ssw skill init --file SKILL.md          # 粘贴/导入现成 SKILL.md(--content 直接给文本;frontmatter 自动带出 name/desc)
-ssw skill remove <id|name> / update [id|name]
-ssw skill export / import <code>        # 迁移码:批量搬家 skills
-ssw skill adopt --agent claude-code [--user|--path .]   # 把 agent 目录里既有的 skills 收进中央库
-ssw skill adopt --all [--user|--path .]   # 一次扫描所有 agent(同名跨 agent 去重,同目录只扫一次);桌面 App 启动时会自动做用户级收养
-ssw catalog [--category dev] [--kind skill|mcp] [--q 关键词]   # 内置推荐库浏览;--kind 把 skills 与 MCP 分流
-ssw catalog categories                  # 分类清单:每类条目数(skill/MCP 细分)
-ssw catalog install <owner/repo|mcp名>   # 一键安装推荐库条目
-ssw recommend [--path /abs/path] [--keywords a,b,c]            # 按技术栈智能推荐
-ssw global show / bind <skillId|name...> / agents <agentId...> [--mode symlink|copy]  # 全局(用户级)共享
-ssw global apply / unapply / rollback   # 物化到各 agent 用户级目录(~/.claude/skills 等),可回滚
-ssw profile export [--file x.json]      # 整套配置库导出为单文件(跨机器/跨平台搬家)
-ssw profile import <file>               # 导入配置库(幂等,已有条目跳过)
+ssw        # 或 skills —— 全键盘操作的可视化面板
 ```
 
-约定:项目与 skill 均支持 `id|name` 寻址(先精确匹配 id,再匹配 name,歧义时报错列候选);全局 `--json` 输出方便脚本化;错误打 stderr、退出码非零;clone/pull 时终端下显示进度条(写 stderr,不干扰 `--json` 解析)。CLI 与桌面版共用 `~/.skills-switch/`,两个前端看到的是同一份状态。
+```
+↑↓ 浏览项目,Enter 切换并 apply(技能组合写入各 agent 目录)
+n 新建项目(名称/路径/agents/模式,可填 AI 需求自动推荐绑定)
+x 删除项目 / a apply / u unapply / r 回滚
+s 技能库 / m MCP 库 / c 内置推荐库(c 切分类,k 切 skills/MCP)
+i AI 推荐 / g 全局共享 / d 环境自检 / q 退出
+```
+
+面板、子命令与桌面 App 共用同一份状态(`~/.skills-switch/`),任一端的改动处处可见。
+
+纯命令行子命令面向脚本与自动化场景(管道等非 TTY 环境下裸跑会打印帮助),常用的有:`doctor` 环境自检、`project create/switch/apply`、`skill add/list/adopt`、`catalog install`、`mcp add`、`global apply`、`profile export/import`、`ai recommend` 等;完整清单与参数用 `ssw --help` 或 `ssw <命令> --help` 查看。约定:项目与 skill 支持 `id|name` 寻址;全局 `--json` 输出方便脚本化;错误打 stderr、退出码非零。
 
 本机使用:`npm run build` 后 `node dist/cli.js ...`(`npm link` 后可直接 `ssw ...` 或 `skills ...`)。
 
