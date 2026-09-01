@@ -28,29 +28,51 @@ export class UpdateError extends Error {}
 
 /** 自动更新配置(update.json;字段级容错读、原子写) */
 export interface UpdateConfig {
-  autoCheck: boolean;    // 启动时自动检查更新(桌面 App;默认开)
+  autoCheck: boolean;    // 启动时自动检查软件更新(桌面 App;默认开)
   autoDownload: boolean; // 发现新版本时自动下载安装包(默认关,下载有流量代价)
+  skillsAutoCheck: boolean;        // 定时检查技能库(github 来源 skills)更新(默认开)
+  skillsCheckIntervalHours: number; // 技能库更新检查间隔(默认 6h,合法范围 1-168,越界自动收敛)
 }
 
-const DEFAULT_CONFIG: UpdateConfig = { autoCheck: true, autoDownload: false };
+const DEFAULT_CONFIG: UpdateConfig = {
+  autoCheck: true,
+  autoDownload: false,
+  skillsAutoCheck: true,
+  skillsCheckIntervalHours: 6,
+};
 
 export async function readUpdateConfig(): Promise<UpdateConfig> {
   const data = await readJsonSafe<Partial<UpdateConfig>>(updateFile(), {});
+  const hours = data.skillsCheckIntervalHours;
   return {
     autoCheck: typeof data.autoCheck === 'boolean' ? data.autoCheck : DEFAULT_CONFIG.autoCheck,
     autoDownload: typeof data.autoDownload === 'boolean' ? data.autoDownload : DEFAULT_CONFIG.autoDownload,
+    skillsAutoCheck:
+      typeof data.skillsAutoCheck === 'boolean' ? data.skillsAutoCheck : DEFAULT_CONFIG.skillsAutoCheck,
+    skillsCheckIntervalHours:
+      typeof hours === 'number' && Number.isFinite(hours) && hours >= 1 && hours <= 168
+        ? hours
+        : DEFAULT_CONFIG.skillsCheckIntervalHours,
   };
 }
 
-/** 更新配置:undefined = 保持不变;非布尔值抛 UpdateError(上层映射 400) */
+/** 更新配置:undefined = 保持不变;类型错误抛 UpdateError(上层映射 400) */
 export async function saveUpdateConfig(patch: Partial<UpdateConfig>): Promise<UpdateConfig> {
   const cur = await readUpdateConfig();
   const next: UpdateConfig = { ...cur };
-  for (const k of ['autoCheck', 'autoDownload'] as const) {
+  for (const k of ['autoCheck', 'autoDownload', 'skillsAutoCheck'] as const) {
     const v = patch[k];
     if (v === undefined) continue;
     if (typeof v !== 'boolean') throw new UpdateError(`${k} 必须是布尔值`);
     next[k] = v;
+  }
+  if (patch.skillsCheckIntervalHours !== undefined) {
+    const v = patch.skillsCheckIntervalHours;
+    if (typeof v !== 'number' || !Number.isFinite(v)) {
+      throw new UpdateError('skillsCheckIntervalHours 必须是数字(小时)');
+    }
+    // 越界收敛到 1-168(一周):过频打 GitHub 无意义,过疏等于关掉
+    next.skillsCheckIntervalHours = Math.min(168, Math.max(1, Math.round(v)));
   }
   await atomicWriteJson(updateFile(), next);
   return next;

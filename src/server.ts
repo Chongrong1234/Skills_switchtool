@@ -13,6 +13,9 @@ import { exportProfile, importProfile } from './core/profile.js';
 import {
   adoptFromAgent,
   adoptFromAllAgents,
+  applyLibraryUpdates,
+  checkLibraryUpdates,
+  getLastLibraryUpdates,
   initSkill,
   installFromGithub,
   installFromLocal,
@@ -494,13 +497,16 @@ export function createApp(): express.Express {
   }));
 
   app.put('/api/update/config', h(async (req, res) => {
-    const { autoCheck, autoDownload } = req.body ?? {};
-    for (const [k, v] of Object.entries({ autoCheck, autoDownload })) {
+    const { autoCheck, autoDownload, skillsAutoCheck, skillsCheckIntervalHours } = req.body ?? {};
+    for (const [k, v] of Object.entries({ autoCheck, autoDownload, skillsAutoCheck })) {
       if (v !== undefined && typeof v !== 'boolean') {
         return void res.status(400).json({ error: `${k} 必须是布尔值` });
       }
     }
-    res.json(await saveUpdateConfig({ autoCheck, autoDownload }));
+    if (skillsCheckIntervalHours !== undefined && typeof skillsCheckIntervalHours !== 'number') {
+      return void res.status(400).json({ error: 'skillsCheckIntervalHours 必须是数字(小时)' });
+    }
+    res.json(await saveUpdateConfig({ autoCheck, autoDownload, skillsAutoCheck, skillsCheckIntervalHours }));
   }));
 
   // 启动下载:异步执行(202 立即返回),进度走 /api/update/status 与 /api/progress 轮询;
@@ -550,6 +556,26 @@ export function createApp(): express.Express {
       return void res.json({ opened: true, dir });
     }
     res.status(400).json({ error: "target 只能是 'release' 或 'download'" });
+  }));
+
+  // ---- 技能库更新(定时查询 + 一键更新;GUI 技能库页徽标/按钮、CLI --check、TUI U 键共用)----
+  // 状态:最近一次检查结果(内存,不发网络请求;null = 本进程还没查过)
+  app.get('/api/skills/updates', h(async (_req, res) => {
+    res.json({ last: getLastLibraryUpdates() });
+  }));
+
+  // 手动检查:对每个 github 仓库 git fetch 后比对上游,返回"可更新"清单(并发共享在途请求)
+  app.post('/api/skills/updates/check', h(async (_req, res) => {
+    res.json(await checkLibraryUpdates());
+  }));
+
+  // 一键更新:缺省更新全部可更新仓库,body.repoIds 可限定;逐 skill 走 updateSkill
+  app.post('/api/skills/updates/apply', h(async (req, res) => {
+    const { repoIds } = req.body ?? {};
+    if (repoIds !== undefined && (!Array.isArray(repoIds) || repoIds.some((x) => typeof x !== 'string'))) {
+      return void res.status(400).json({ error: 'repoIds 必须是字符串数组' });
+    }
+    res.json(await applyLibraryUpdates(repoIds));
   }));
 
   // 托管前端单页应用

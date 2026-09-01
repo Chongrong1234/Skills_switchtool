@@ -24,7 +24,13 @@ import {
   unapplyGlobal,
   type GlobalProfile,
 } from './core/global.js';
-import { listSkills } from './core/library.js';
+import {
+  applyLibraryUpdates,
+  checkLibraryUpdates,
+  getLastLibraryUpdates,
+  listSkills,
+  type LibraryUpdatesResult,
+} from './core/library.js';
 import { listMcps } from './core/mcps.js';
 import { createProject, deleteProject, listProjects, setActiveProject, setProjectSkills } from './core/projects.js';
 import { rollback } from './core/snapshot.js';
@@ -67,6 +73,8 @@ interface State {
   updateCheck: UpdateCheckResult | null;
   /** 自动更新配置(reload 时重读,视图里只展示;改配置走 CLI ssw update --auto-*) */
   updateCfg: UpdateConfig;
+  /** 技能库更新检查结果(reload 时读内存态,不发网络;技能库视图 U 键触发检查/一键更新) */
+  libraryUpdates: LibraryUpdatesResult | null;
 }
 
 const INV = '\x1b[7m'; // 反色(光标行)
@@ -97,7 +105,8 @@ export async function startTui(): Promise<void> {
     doctor: null,
     aiRec: null,
     updateCheck: null,
-    updateCfg: { autoCheck: true, autoDownload: false },
+    updateCfg: { autoCheck: true, autoDownload: false, skillsAutoCheck: true, skillsCheckIntervalHours: 6 },
+    libraryUpdates: null,
   };
 
   async function reload(): Promise<void> {
@@ -112,6 +121,7 @@ export async function startTui(): Promise<void> {
     state.globalProfile = await readGlobal();
     state.catalog = await listCatalogWithInstalled();
     state.updateCfg = await readUpdateConfig();
+    state.libraryUpdates = getLastLibraryUpdates(); // 只读内存态,不发网络
   }
 
   function render(): void {
@@ -144,7 +154,15 @@ export async function startTui(): Promise<void> {
       lines.push('');
       lines.push(`${DIM}↑↓ 移动  Enter 切换并 apply  n 新建  x 删除  a apply  u unapply  r 回滚  i AI推荐  s 技能库  m MCP库  g 全局共享  c 推荐库  d 自检  U 更新  q 退出${RESET}`);
     } else if (state.view === 'skills') {
-      lines.push(`技能库(${state.skills.length}):`);
+      // 可更新徽标:本进程最近一次检查结果里 behind>0 的仓库数(TUI 进程内无定时器,
+      // 依赖桌面 App 的定时检查或手动按 U;结果随 reload 读内存态刷新)
+      const updatable = state.libraryUpdates?.ok
+        ? state.libraryUpdates.updates.filter((u) => u.behind > 0 && !u.error)
+        : [];
+      lines.push(
+        `技能库(${state.skills.length}):` +
+        (updatable.length ? `  ${BOLD}${updatable.length} 个仓库可更新(U 一键更新)${RESET}` : ''),
+      );
       lines.push('');
       if (!state.skills.length) {
         lines.push('(库为空,先用 ssw skill add/init 添加)');
@@ -154,7 +172,7 @@ export async function startTui(): Promise<void> {
         lines.push(`  ${s.id.padEnd(28)} ${cut(s.name, 16).padEnd(16)} [${s.source.type}]${hot}  ${cut(s.description, 24)}`);
       }
       lines.push('');
-      lines.push(`${DIM}Esc 返回项目视图  q 退出${RESET}`);
+      lines.push(`${DIM}U 检查更新(有可更新时再按 U 一键更新全部)  Esc 返回项目视图  q 退出${RESET}`);
     } else if (state.view === 'mcps') {
       lines.push(`MCP 库(${state.mcps.length}):`);
       lines.push('');
@@ -462,7 +480,35 @@ export async function startTui(): Promise<void> {
         }
         return;
       }
-      if (state.view !== 'projects') return; // 技能库/MCP 库为只读视图,只响应 Esc/q
+      if (state.view === 'skills') {
+        // 技能库视图 U:第一次按 = 检查更新(git fetch 各 github 仓库);
+        // 发现有可更新后再按 = 一键更新全部(逐 skill git pull --ff-only)
+        if (key === 'U') {
+          const last = state.libraryUpdates;
+          const updatable = last?.ok ? last.updates.filter((u) => u.behind > 0 && !u.error) : [];
+          if (updatable.length) {
+            void run(async () => {
+              const r = await applyLibraryUpdates();
+              state.libraryUpdates = getLastLibraryUpdates();
+              const failTxt = r.failed.length ? `;失败 ${r.failed.length} 个(${r.failed[0].message})` : '';
+              return `✓ 已更新 ${r.updated.length} 个 skill(涉及 ${updatable.length} 个仓库)${failTxt}`;
+            });
+          } else {
+            void run(async () => {
+              const r = await checkLibraryUpdates();
+              if (!r.ok) return `✗ ${r.message}`;
+              const n = r.updates.filter((u) => u.behind > 0 && !u.error).length;
+              const errs = r.updates.filter((u) => u.error).length;
+              const errTxt = errs ? `;${errs} 个仓库检查失败(网络/目录问题)` : '';
+              return n
+                ? `发现 ${n} 个仓库有更新:${r.updates.filter((u) => u.behind > 0).map((u) => `${u.repoId}(+${u.behind})`).join(', ')}——再按 U 一键更新全部${errTxt}`
+                : `✓ 技能库全部已是最新(${r.updates.length} 个 github 仓库)${errTxt}`;
+            });
+          }
+        }
+        return;
+      }
+      if (state.view !== 'projects') return; // 技能库/MCP 库为只读视图,只响应 Esc/q(技能库另有 U 更新)
       switch (key) {
         case '\u001b[A': // ↑
           state.cursor = Math.max(0, state.cursor - 1);

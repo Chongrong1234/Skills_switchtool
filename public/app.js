@@ -404,6 +404,7 @@ function openSettingsModal() {
         <div class="ai-row">
           <label class="ai-pick"><input type="checkbox" id="st-upd-autocheck" /> 启动时自动检查更新</label>
           <label class="ai-pick"><input type="checkbox" id="st-upd-autodl" /> 发现新版本时自动下载</label>
+          <label class="ai-pick"><input type="checkbox" id="st-upd-skills" /> 定时检查技能库更新(每 6 小时;有更新时在技能库页提示)</label>
         </div>
         <div class="ai-row">
           <button class="btn btn-sm btn-primary" id="st-upd-check">检查更新</button>
@@ -458,6 +459,7 @@ function openSettingsModal() {
     ptext: modal.querySelector('#st-upd-ptext'),
     autocheck: modal.querySelector('#st-upd-autocheck'),
     autodl: modal.querySelector('#st-upd-autodl'),
+    skills: modal.querySelector('#st-upd-skills'),
     check: modal.querySelector('#st-upd-check'),
     download: modal.querySelector('#st-upd-download'),
     open: modal.querySelector('#st-upd-open'),
@@ -474,6 +476,7 @@ function openSettingsModal() {
     updEls.version.textContent = `v${st.current}`;
     updEls.autocheck.checked = !!st.config.autoCheck;
     updEls.autodl.checked = !!st.config.autoDownload;
+    updEls.skills.checked = !!st.config.skillsAutoCheck;
     const last = st.last;
     const dl = st.download;
     let text = '尚未检查更新';
@@ -524,6 +527,10 @@ function openSettingsModal() {
   updEls.autodl.addEventListener('change', () => run(async () => {
     await api('PUT', '/api/update/config', { autoDownload: updEls.autodl.checked });
     toast(updEls.autodl.checked ? '已开启发现新版本自动下载' : '已关闭自动下载');
+  }));
+  updEls.skills.addEventListener('change', () => run(async () => {
+    await api('PUT', '/api/update/config', { skillsAutoCheck: updEls.skills.checked });
+    toast(updEls.skills.checked ? '已开启定时检查技能库更新' : '已关闭定时检查');
   }));
   updEls.check.addEventListener('click', () => run(async () => {
     updEls.check.disabled = true;
@@ -941,7 +948,10 @@ function renderSkillLibrary() {
       <button class="btn" id="sk-import">导入迁移码</button>
       <button class="btn" id="sk-profile-export">导出配置库</button>
       <button class="btn" id="sk-profile-import">导入配置库</button>
+      <button class="btn" id="sk-upd-check">检查更新</button>
+      <button class="btn btn-primary" id="sk-upd-apply" style="display:none">一键更新全部</button>
     </div>
+    <div class="lib-upd" id="sk-upd-bar" style="display:none"></div>
     <div class="skills-grid">
       ${state.skills.map((s) => `
         <div class="skill-card">
@@ -963,6 +973,48 @@ function renderSkillLibrary() {
   document.getElementById('sk-import').addEventListener('click', openImportModal);
   document.getElementById('sk-profile-export').addEventListener('click', exportProfileFile);
   document.getElementById('sk-profile-import').addEventListener('click', openProfileImportModal);
+  // ---- 技能库更新:进入视图先读服务端已知状态(桌面 App 定时检查的结果),
+  // 「检查更新」手动触发一次,「一键更新全部」批量 git pull ----
+  const updBar = document.getElementById('sk-upd-bar');
+  const updApplyBtn = document.getElementById('sk-upd-apply');
+  const renderLibUpd = (last) => {
+    updApplyBtn.style.display = 'none';
+    if (!last || !last.updates || !last.updates.length) {
+      updBar.style.display = 'none';
+      return;
+    }
+    updBar.style.display = '';
+    if (!last.ok) {
+      updBar.innerHTML = `<span class="rdesc">检查技能库更新失败:${esc(last.message || '未知错误')}</span>`;
+      return;
+    }
+    const updatable = last.updates.filter((u) => u.behind > 0 && !u.error);
+    const errs = last.updates.filter((u) => u.error);
+    const parts = [];
+    if (updatable.length) {
+      parts.push(`<span class="lib-upd-hot">${updatable.length} 个仓库有更新: ${updatable.map((u) => `${esc(u.repoId)}(+${u.behind})`).join(', ')}</span>`);
+      updApplyBtn.style.display = '';
+    } else {
+      parts.push(`<span class="rdesc">技能库全部已是最新(${last.updates.length} 个 github 仓库)</span>`);
+    }
+    if (errs.length) parts.push(`<span class="rdesc">${errs.length} 个仓库检查失败(网络/目录问题)</span>`);
+    parts.push(`<span class="rdesc">检查于 ${esc((last.checkedAt || '').replace('T', ' ').slice(0, 19))}</span>`);
+    updBar.innerHTML = parts.join(' · ');
+  };
+  api('GET', '/api/skills/updates').then((r) => renderLibUpd(r.last)).catch(() => {});
+  document.getElementById('sk-upd-check').addEventListener('click', () => run(async () => {
+    toast('正在检查技能库更新(逐仓库 git fetch)…');
+    const r = await api('POST', '/api/skills/updates/check');
+    renderLibUpd(r);
+    const n = (r.updates || []).filter((u) => u.behind > 0 && !u.error).length;
+    toast(r.ok === false ? '检查失败' : n ? `发现 ${n} 个仓库有更新` : '技能库全部已是最新');
+  }));
+  updApplyBtn.addEventListener('click', () => run(async () => {
+    const r = await api('POST', '/api/skills/updates/apply', {});
+    await loadAll();
+    render();
+    toast(`已更新 ${r.updated.length} 个 skill${r.failed.length ? `,失败 ${r.failed.length} 个` : ''}`);
+  }));
   main.querySelectorAll('[data-del-skill]').forEach((btn) =>
     btn.addEventListener('click', () => run(async () => {
       if (!confirm(`确定从库中删除「${btn.dataset.delSkill}」?`)) return;

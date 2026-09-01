@@ -261,6 +261,18 @@ body {
 }
 .update-banner:hover { background: rgba(79, 140, 255, 0.22); }
 
+/* ---------- 技能库更新提示条(技能库页:可更新清单 + 检查时间) ---------- */
+.lib-upd {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  line-height: 1.6;
+  word-break: break-all;
+}
+.lib-upd-hot { color: var(--accent-hover); font-weight: 600; }
+
 /* ---------- toast ---------- */
 #toast-root { position: fixed; top: 18px; right: 18px; z-index: 200; display: flex; flex-direction: column; gap: 8px; }
 .toast {

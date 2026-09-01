@@ -5,6 +5,8 @@ import http, { type Server } from 'node:http';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PROFILE_FORMAT } from '../src/core/profile.js';
 import { createApp } from '../src/server.js';
@@ -427,17 +429,23 @@ describe('软件更新端点(GitHub API 走假 fetch,其余请求代理回真实
   it('status/config/check/download/open 全链路', async () => {
     stubGithubFetch();
     try {
-      // 状态:默认配置(自动检查开、自动下载关),不发网络请求
+      // 状态:默认配置(软件自动检查开/自动下载关,技能库定时检查开),不发网络请求
       const st0 = await api('GET', '/api/update/status');
       expect(st0.status).toBe(200);
       expect(typeof st0.data.current).toBe('string');
-      expect(st0.data.config).toEqual({ autoCheck: true, autoDownload: false });
+      expect(st0.data.config).toEqual({
+        autoCheck: true,
+        autoDownload: false,
+        skillsAutoCheck: true,
+        skillsCheckIntervalHours: 6,
+      });
 
-      // 配置写回 + 非布尔 400
-      const cfg = await api('PUT', '/api/update/config', { autoDownload: true });
+      // 配置写回 + 类型错误 400
+      const cfg = await api('PUT', '/api/update/config', { autoDownload: true, skillsAutoCheck: false });
       expect(cfg.status).toBe(200);
-      expect(cfg.data).toEqual({ autoCheck: true, autoDownload: true });
+      expect(cfg.data).toEqual({ autoCheck: true, autoDownload: true, skillsAutoCheck: false, skillsCheckIntervalHours: 6 });
       expect((await api('PUT', '/api/update/config', { autoCheck: 'yes' })).status).toBe(400);
+      expect((await api('PUT', '/api/update/config', { skillsCheckIntervalHours: '6' })).status).toBe(400);
 
       // 手动检查(强制):发现新版本,linux 下挑到 AppImage
       const chk = await api('POST', '/api/update/check', {});
@@ -477,6 +485,88 @@ describe('软件更新端点(GitHub API 走假 fetch,其余请求代理回真实
       const again = await api('POST', '/api/update/download', {});
       expect(again.status).toBe(200);
       expect(again.data.already).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe('技能库更新端点(本地 git 仓库模拟远程,不打真实 GitHub)', () => {
+  const execFileP = promisify(execFile);
+  const git = (args: string[]) => execFileP('git', args);
+
+  /** 造本地"远程"仓库(bare)+ 工作克隆,把克隆放进库目录并写注册表条目 */
+  async function seedLibraryClone(ownerRepo: string): Promise<{ workDir: string }> {
+    const [owner, repo] = ownerRepo.split('/');
+    const remoteDir = path.join(tmp, `remote-${owner}-${repo}.git`);
+    const workDir = path.join(tmp, `work-${owner}-${repo}`);
+    await git(['init', '--bare', '-b', 'main', remoteDir]);
+    await git(['init', '-b', 'main', workDir]);
+    await fs.mkdir(path.join(workDir, 'demo'), { recursive: true });
+    await fs.writeFile(path.join(workDir, 'demo', 'SKILL.md'), '---\nname: demo\ndescription: d\n---\n\n# demo\n');
+    await git(['-C', workDir, 'add', '.']);
+    await git(['-C', workDir, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', 'init']);
+    await git(['-C', workDir, 'remote', 'add', 'origin', remoteDir]);
+    await git(['-C', workDir, 'push', '-u', 'origin', 'main']);
+    await git(['clone', remoteDir, path.join(tmp, 'library', `github__${owner}__${repo}`)]);
+    await fs.writeFile(
+      path.join(tmp, 'registry.json'),
+      JSON.stringify({
+        skills: [
+          {
+            id: `${ownerRepo}:demo`,
+            name: 'demo',
+            description: 'd',
+            source: { type: 'github', uri: ownerRepo },
+            tags: [],
+            installedAt: new Date().toISOString(),
+          },
+        ],
+      }),
+    );
+    return { workDir };
+  }
+
+  it('status/check/apply 全链路 + repoIds 校验', async () => {
+    // apply 里 updateSkill 会顺带刷 stars:短路 api.github.com,localhost 走真实 fetch
+    const realFetch = globalThis.fetch;
+    vi.stubGlobal('fetch', (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes('api.github.com')) return new Response('{}', { status: 404 });
+      return realFetch(input, init);
+    }) as typeof fetch);
+    try {
+      // 还没检查过:last 为 null,不发网络
+      const st0 = await api('GET', '/api/skills/updates');
+      expect(st0.status).toBe(200);
+      expect(st0.data.last).toBeNull();
+
+      const { workDir } = await seedLibraryClone('o/srv-upd');
+
+      // 手动检查:behind 0
+      const c1 = await api('POST', '/api/skills/updates/check');
+      expect(c1.status).toBe(200);
+      expect(c1.data.ok).toBe(true);
+      expect(c1.data.updates[0]).toMatchObject({ repoId: 'o/srv-upd', behind: 0 });
+
+      // 上游推一个新提交后再查:behind 1
+      await fs.writeFile(path.join(workDir, 'demo', 'new.md'), 'x');
+      await git(['-C', workDir, 'add', '.']);
+      await git(['-C', workDir, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', 'v2']);
+      await git(['-C', workDir, 'push']);
+      const c2 = await api('POST', '/api/skills/updates/check');
+      expect(c2.data.updates[0].behind).toBe(1);
+      expect((await api('GET', '/api/skills/updates')).data.last.updates[0].behind).toBe(1);
+
+      // repoIds 校验:非字符串数组 400
+      expect((await api('POST', '/api/skills/updates/apply', { repoIds: 'x' })).status).toBe(400);
+
+      // 一键更新:更新成功,库内拿到新文件,状态里 behind 清零
+      const ap = await api('POST', '/api/skills/updates/apply', {});
+      expect(ap.status).toBe(200);
+      expect(ap.data.updated).toEqual(['o/srv-upd:demo']);
+      expect(ap.data.failed).toEqual([]);
+      expect(await fs.readFile(path.join(tmp, 'library', 'github__o__srv-upd', 'demo', 'new.md'), 'utf8')).toBe('x');
+      expect((await api('GET', '/api/skills/updates')).data.last.updates[0].behind).toBe(0);
     } finally {
       vi.unstubAllGlobals();
     }

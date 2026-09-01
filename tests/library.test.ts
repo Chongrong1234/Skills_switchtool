@@ -4,8 +4,13 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  applyLibraryUpdates,
+  checkLibraryUpdates,
+  getLastLibraryUpdates,
   initSkill,
   installFromGithub,
   installFromLocal,
@@ -305,5 +310,112 @@ describe('library', () => {
     const repoDir = path.join(tmp, 'fake-repo');
     await writeFakeSkill(repoDir, 'skills', 'code-review');
     await expect(registerSkillsWithFallback(repoDir, 'o/r3', 'o/r3', 'nope')).rejects.toThrow('不存在子目录');
+  });
+});
+
+/**
+ * 技能库更新检查:全部走本地 git 仓库(init → bare remote → clone 进库),
+ * 不打真实 GitHub;updateSkill 内部的 fetchRepoStars 用假 fetch 短路(软失败保留旧值)。
+ */
+describe('技能库更新检查(checkLibraryUpdates / applyLibraryUpdates)', () => {
+  const execFileP = promisify(execFile);
+  const git = (args: string[]) => execFileP('git', args);
+
+  /** 造一个可推可拉的本地"远程"仓库并把克隆放进库目录,登记一个 github 条目 */
+  async function seedCloneRepo(ownerRepo: string): Promise<{ repoDir: string; workDir: string }> {
+    const [owner, repo] = ownerRepo.split('/');
+    const remoteDir = path.join(tmp, `remote-${owner}-${repo}.git`);
+    const workDir = path.join(tmp, `work-${owner}-${repo}`);
+    await git(['init', '--bare', '-b', 'main', remoteDir]);
+    await git(['init', '-b', 'main', workDir]);
+    const skillDir = path.join(workDir, 'demo');
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(path.join(skillDir, 'SKILL.md'), '---\nname: demo\ndescription: 测试技能\n---\n\n# demo\n');
+    await git(['-C', workDir, 'add', '.']);
+    await git(['-C', workDir, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', 'init']);
+    await git(['-C', workDir, 'remote', 'add', 'origin', remoteDir]);
+    await git(['-C', workDir, 'push', '-u', 'origin', 'main']);
+    const repoDir = path.join(libraryDir(), `github__${owner}__${repo}`);
+    await git(['clone', remoteDir, repoDir]);
+    const entry: SkillEntry = {
+      id: `${ownerRepo}:demo`,
+      name: 'demo',
+      description: '测试技能',
+      source: { type: 'github', uri: ownerRepo },
+      tags: [],
+      installedAt: new Date().toISOString(),
+    };
+    await upsertSkill(entry);
+    return { repoDir, workDir };
+  }
+
+  /** 往 work 仓库推一个新提交(模拟上游更新) */
+  async function pushUpstreamCommit(workDir: string): Promise<void> {
+    await fs.writeFile(path.join(workDir, 'demo', 'extra.md'), 'v2');
+    await git(['-C', workDir, 'add', '.']);
+    await git(['-C', workDir, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', 'v2']);
+    await git(['-C', workDir, 'push']);
+  }
+
+  beforeEach(() => {
+    // updateSkill 会顺带刷 stars(软失败);短路掉对 api.github.com 的真实请求
+    vi.stubGlobal('fetch', (async () => new Response('{}', { status: 404 })) as typeof fetch);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('空库:ok 且 updates 为空', async () => {
+    const r = await checkLibraryUpdates();
+    expect(r.ok).toBe(true);
+    expect(r.updates).toEqual([]);
+  });
+
+  it('检查 → 发现落后 → 一键更新 → 库内文件刷新且徽标清除', async () => {
+    const { workDir } = await seedCloneRepo('o/upd-lib');
+
+    const r1 = await checkLibraryUpdates();
+    expect(r1.ok).toBe(true);
+    expect(r1.updates).toHaveLength(1);
+    expect(r1.updates[0]).toMatchObject({ repoId: 'o/upd-lib', behind: 0, skillIds: ['o/upd-lib:demo'] });
+    expect(getLastLibraryUpdates()?.updates[0].behind).toBe(0);
+
+    await pushUpstreamCommit(workDir);
+    const r2 = await checkLibraryUpdates();
+    expect(r2.updates[0].behind).toBe(1);
+
+    const applied = await applyLibraryUpdates();
+    expect(applied.failed).toEqual([]);
+    expect(applied.updated).toEqual(['o/upd-lib:demo']);
+    // 库内文件已更新到 v2
+    expect(await fs.readFile(path.join(libraryDir(), 'github__o__upd-lib', 'demo', 'extra.md'), 'utf8')).toBe('v2');
+    // 更新成功的仓库即时从"可更新"清单摘掉,不必等下次 fetch
+    expect(getLastLibraryUpdates()?.updates[0].behind).toBe(0);
+  });
+
+  it('克隆目录缺失:该仓记 error,不影响整体 ok;apply 跳过 error 仓库', async () => {
+    const entry: SkillEntry = {
+      id: 'o/ghost:x',
+      name: 'x',
+      description: 'd',
+      source: { type: 'github', uri: 'o/ghost' },
+      tags: [],
+      installedAt: new Date().toISOString(),
+    };
+    await upsertSkill(entry);
+    const r = await checkLibraryUpdates();
+    expect(r.ok).toBe(true);
+    expect(r.updates[0].error).toContain('缺失');
+    const applied = await applyLibraryUpdates();
+    expect(applied.updated).toEqual([]);
+    expect(applied.failed).toEqual([]);
+  });
+
+  it('并发检查共享同一次在途请求(结果对象同一引用)', async () => {
+    await seedCloneRepo('o/upd-conc');
+    const [a, b] = await Promise.all([checkLibraryUpdates(), checkLibraryUpdates()]);
+    expect(a).toBe(b);
+    expect(a.ok).toBe(true);
   });
 });

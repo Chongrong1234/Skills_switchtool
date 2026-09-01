@@ -15,6 +15,7 @@ import { exportProfile, importProfile } from './core/profile.js';
 import {
   adoptFromAgent,
   adoptFromAllAgents,
+  checkLibraryUpdates,
   initSkill,
   installFromGithub,
   installFromLocal,
@@ -538,8 +539,38 @@ leaf(skillCmd.command('remove').description('从库中卸载 skill(同时解除�
   }),
 );
 
-leaf(skillCmd.command('update').description('更新 skill(省略参数则更新全部 github 来源)').argument('[id|name]', 'skill id 或名称(名称唯一时可用)')).action(
-  wrap(async (cmd, ref?: string) => {
+leaf(
+  skillCmd
+    .command('update')
+    .description('更新 skill(省略参数则更新全部 github 来源;--check 只检查不更新)')
+    .argument('[id|name]', 'skill id 或名称(名称唯一时可用)')
+    .option('--check', '只检查更新(git fetch 比对各仓库上游),不执行更新'),
+).action(
+  wrap(async (cmd, ref: string | undefined, opts: { check?: boolean }) => {
+    // --check:定时查询的手动版——只报告哪些仓库落后远程,不改动库
+    if (opts.check) {
+      if (ref) throw new Error('--check 与指定 skill 二选一(检查总是覆盖全部 github 仓库)');
+      const r = await checkLibraryUpdates();
+      out(cmd, r, () => {
+        if (!r.ok) return `✗ ${r.message}`;
+        if (!r.updates.length) return '(库中没有 github 来源的 skill)';
+        const lines: string[] = [];
+        const updatable = r.updates.filter((u) => u.behind > 0 && !u.error);
+        for (const u of r.updates) {
+          if (u.error) lines.push(`✗ ${u.repoId}  检查失败: ${u.error}`);
+          else if (u.behind > 0) lines.push(`↑ ${u.repoId}  落后 ${u.behind} 个提交(${u.skillNames.join(', ')})`);
+        }
+        lines.push(
+          updatable.length
+            ? `共 ${updatable.length} 个仓库可更新;一键更新全部: ssw skill update`
+            : `✓ 全部已是最新(${r.updates.length} 个 github 仓库)`,
+        );
+        return lines.join('\n');
+      });
+      // 有可更新项时退出码非零,方便脚本判断"需要更新"(结果明细仍打 stdout)
+      if (r.ok && r.updates.some((u) => u.behind > 0 && !u.error)) process.exitCode = 1;
+      return;
+    }
     if (ref) {
       const s = await findSkill(ref);
       const entry = await updateSkill(s.id);
@@ -1012,15 +1043,16 @@ leaf(
     .option('--download', '下载匹配当前平台的安装包到数据目录 downloads/')
     .option('--open', '用浏览器打开最新 release 发布页')
     .option('--auto-check <on|off>', '启动时自动检查更新(桌面 App;不带其他选项时只保存配置)')
-    .option('--auto-download <on|off>', '发现新版本时自动下载安装包(不带其他选项时只保存配置)'),
+    .option('--auto-download <on|off>', '发现新版本时自动下载安装包(不带其他选项时只保存配置)')
+    .option('--skills-check <on|off>', '定时检查技能库(github 来源 skills)更新,默认每 6 小时'),
 ).action(
   wrap(
     async (
       cmd,
-      opts: { download?: boolean; open?: boolean; autoCheck?: string; autoDownload?: string },
+      opts: { download?: boolean; open?: boolean; autoCheck?: string; autoDownload?: string; skillsCheck?: string },
     ) => {
       // 配置开关:纯本地读写,不发网络请求
-      if (opts.autoCheck !== undefined || opts.autoDownload !== undefined) {
+      if (opts.autoCheck !== undefined || opts.autoDownload !== undefined || opts.skillsCheck !== undefined) {
         const parseBool = (v: string | undefined, flag: string): boolean | undefined => {
           if (v === undefined) return undefined;
           if (v === 'on') return true;
@@ -1030,9 +1062,10 @@ leaf(
         const cfg = await saveUpdateConfig({
           autoCheck: parseBool(opts.autoCheck, '--auto-check'),
           autoDownload: parseBool(opts.autoDownload, '--auto-download'),
+          skillsAutoCheck: parseBool(opts.skillsCheck, '--skills-check'),
         });
         out(cmd, cfg, () =>
-          `更新配置已保存:自动检查 ${cfg.autoCheck ? '开' : '关'} · 自动下载 ${cfg.autoDownload ? '开' : '关'}`,
+          `更新配置已保存:自动检查 ${cfg.autoCheck ? '开' : '关'} · 自动下载 ${cfg.autoDownload ? '开' : '关'} · 定时检查技能库 ${cfg.skillsAutoCheck ? `开(每 ${cfg.skillsCheckIntervalHours}h)` : '关'}`,
         );
         return;
       }

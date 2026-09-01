@@ -10,6 +10,9 @@
  * 进度解析必须语言无关,否则中文系统永远解析不出百分比、进度条不显示。
  * github 安装扫描根级落空时自动探测常见合集子目录(skills/ 等)——联网推荐命中的
  * 合集仓库大多把 skills 收在子目录里,只扫根级会误报"仓库中未找到合法 skill"。
+ * 技能库更新检查(checkLibraryUpdates / applyLibraryUpdates):按仓库分组(git 来源
+ * 多 skill 共享一个克隆),fetch 后比较 HEAD 与上游得出"可更新"清单;结果存内存
+ * (getLastLibraryUpdates)供 GUI 徽标轮询;serve.ts 按 update.json 配置定时调用。
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -147,7 +150,7 @@ export function summarizeStderr(stderr: string): string {
 const MAX_GIT_OUTPUT = 16 * 1024 * 1024;
 
 /**
- * 执行 git 子命令。失败都包装成可读的 LibraryError 而不是裸崩溃/挂死:
+ * 执行 git 子命令,返回 stdout。失败都包装成可读的 LibraryError 而不是裸崩溃/挂死:
  * - git 不在 PATH(spawn ENOENT,Windows 常见)
  * - 超时:主动 SIGTERM 子进程(网络挂起等)
  * - 凭据提示:GIT_TERMINAL_PROMPT=0 强制失败而非在控制终端等输入——
@@ -155,10 +158,10 @@ const MAX_GIT_OUTPUT = 16 * 1024 * 1024;
  * 用 spawn 而非 execFile:流式读 stderr 才能实时渲染 clone/pull 进度条
  * (execFile 攒到结束才回调,大仓库几分钟零输出,用户以为死机)。
  */
-async function runGit(args: string[], label?: string): Promise<void> {
+async function runGit(args: string[], label?: string): Promise<string> {
   const sub = gitSubcommand(args);
   const timeoutMs = gitTimeoutMs();
-  await new Promise<void>((resolve, reject) => {
+  return new Promise<string>((resolve, reject) => {
     const child = spawn('git', args, {
       env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
     });
@@ -197,7 +200,7 @@ async function runGit(args: string[], label?: string): Promise<void> {
       progress?.end();
       if (label) gitProgress.delete(label); // 任务结束即摘表,GUI 请求返回后自行隐藏进度条
       if (err) reject(err);
-      else resolve();
+      else resolve(stdout); // 检查类调用(fetch 后的 rev-list 等)需要读 stdout
     };
     child.on('error', (err) => {
       // spawn 失败(典型:ENOENT,git 不在 PATH)
@@ -581,6 +584,154 @@ export async function updateSkill(id: string): Promise<SkillEntry> {
   }
   // local:从原路径重新复制
   return installFromLocal(entry.source.uri);
+}
+
+// ---------- 技能库更新检查(定时查询 + 一键更新;GUI 技能库页 / CLI --check / TUI U 键共用)----------
+
+/** 一个 github 仓库(克隆)及其登记在库的全部 skill;检查/更新以仓库为单位 */
+interface GithubRepoGroup {
+  repoId: string;   // owner/repo
+  repoDir: string;  // 库内克隆目录
+  skills: SkillEntry[];
+}
+
+/** 按仓库分组 github 来源条目(同一仓库的多个 skill 共享一个克隆,只 fetch 一次) */
+async function groupGithubRepos(): Promise<GithubRepoGroup[]> {
+  const registry = await readRegistry();
+  const map = new Map<string, GithubRepoGroup>();
+  for (const s of registry) {
+    if (s.source.type !== 'github') continue;
+    const { owner, repo } = normalizeGithubUri(s.source.uri);
+    const repoId = `${owner}/${repo}`;
+    let g = map.get(repoId);
+    if (!g) {
+      g = { repoId, repoDir: path.join(libraryDir(), `github__${owner}__${repo}`), skills: [] };
+      map.set(repoId, g);
+    }
+    g.skills.push(s);
+  }
+  return [...map.values()];
+}
+
+export interface SkillRepoUpdate {
+  repoId: string;
+  repoDir: string;
+  skillIds: string[];
+  skillNames: string[];
+  /** 落后远程的提交数(0 = 已最新;浅克隆数不出来但 sha 不同记 1) */
+  behind: number;
+  /** 该仓库检查失败(网络/目录缺失等),不影响其它仓库 */
+  error?: string;
+}
+
+export interface LibraryUpdatesResult {
+  ok: boolean; // false = 整体失败(如 git 缺失),message 带原因
+  checkedAt: string;
+  updates: SkillRepoUpdate[]; // 全部 github 仓库;behind>0 即"可更新"
+  message?: string;
+}
+
+let libUpdatesInflight: Promise<LibraryUpdatesResult> | null = null; // 在途检查(并发去重)
+let lastLibraryUpdates: LibraryUpdatesResult | null = null; // 最近一次结果(GUI 徽标轮询用)
+
+/** 本进程最近一次技能库更新检查(未检查过返回 null);GET 状态端点用,不发网络请求 */
+export function getLastLibraryUpdates(): LibraryUpdatesResult | null {
+  return lastLibraryUpdates;
+}
+
+/**
+ * 检查技能库更新:对每个 github 仓库 git fetch 后比较 HEAD 与上游(落后提交数)。
+ * 单仓失败只记该仓 error;整体失败(如 git 不在 PATH)降级 { ok:false, message }。
+ * 并发调用共享同一次在途检查(定时器与手动检查不重复打网络)。
+ */
+export function checkLibraryUpdates(): Promise<LibraryUpdatesResult> {
+  if (libUpdatesInflight) return libUpdatesInflight;
+  const p = doCheckLibraryUpdates().finally(() => {
+    if (libUpdatesInflight === p) libUpdatesInflight = null;
+  });
+  libUpdatesInflight = p;
+  return p;
+}
+
+async function doCheckLibraryUpdates(): Promise<LibraryUpdatesResult> {
+  const checkedAt = new Date().toISOString();
+  try {
+    const groups = await groupGithubRepos();
+    const updates: SkillRepoUpdate[] = [];
+    // 串行逐仓 fetch:仓库数通常个位数,串行避免对 GitHub 并发压力,也让超时语义清晰
+    for (const g of groups) {
+      const base = {
+        repoId: g.repoId,
+        repoDir: g.repoDir,
+        skillIds: g.skills.map((s) => s.id),
+        skillNames: g.skills.map((s) => s.name),
+      };
+      try {
+        const stat = await fs.stat(g.repoDir).catch(() => null);
+        if (!stat?.isDirectory()) throw new Error('克隆目录缺失(可能被手动删除,可重装该 skill)');
+        await runGit(['-C', g.repoDir, 'fetch', '--quiet', 'origin']);
+        let behind: number;
+        try {
+          behind = Number((await runGit(['-C', g.repoDir, 'rev-list', '--count', 'HEAD..@{u}'])).trim()) || 0;
+        } catch {
+          // 浅克隆(--depth 1)等场景 rev-list 可能失败:退化为比较 HEAD 与上游 sha
+          const local = (await runGit(['-C', g.repoDir, 'rev-parse', 'HEAD'])).trim();
+          const remote = (await runGit(['-C', g.repoDir, 'rev-parse', '@{u}'])).trim();
+          behind = local === remote ? 0 : 1;
+        }
+        updates.push({ ...base, behind });
+      } catch (err) {
+        updates.push({ ...base, behind: 0, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    const result: LibraryUpdatesResult = { ok: true, checkedAt, updates };
+    lastLibraryUpdates = result;
+    return result;
+  } catch (err) {
+    const result: LibraryUpdatesResult = {
+      ok: false,
+      checkedAt,
+      updates: [],
+      message: `检查技能库更新失败(已降级): ${err instanceof Error ? err.message : String(err)}`,
+    };
+    lastLibraryUpdates = result;
+    return result;
+  }
+}
+
+/**
+ * 一键更新:把可更新(behind>0)仓库里的全部 skill 逐个 updateSkill(git pull --ff-only;
+ * 同仓库多个 skill 共享克隆,后续 pull 是幂等空操作)。
+ * repoIds 限定只更新这些仓库;缺省更新最近一次检查中全部可更新仓库(没检查过则先查一次)。
+ * 更新成功的仓库即时从 lastLibraryUpdates 摘掉(GUI 徽标不用等下次 fetch 就消失)。
+ */
+export async function applyLibraryUpdates(
+  repoIds?: string[],
+): Promise<{ updated: string[]; failed: { id: string; message: string }[] }> {
+  const last = lastLibraryUpdates ?? (await checkLibraryUpdates());
+  const targets = last.updates.filter(
+    (u) => u.behind > 0 && !u.error && (!repoIds || repoIds.includes(u.repoId)),
+  );
+  const updated: string[] = [];
+  const failed: { id: string; message: string }[] = [];
+  for (const t of targets) {
+    let repoOk = true;
+    for (const id of t.skillIds) {
+      try {
+        await updateSkill(id);
+        updated.push(id);
+      } catch (err) {
+        repoOk = false;
+        failed.push({ id, message: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    if (repoOk && lastLibraryUpdates) {
+      lastLibraryUpdates.updates = lastLibraryUpdates.updates.map((u) =>
+        u.repoId === t.repoId ? { ...u, behind: 0 } : u,
+      );
+    }
+  }
+  return { updated, failed };
 }
 
 /**

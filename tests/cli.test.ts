@@ -539,7 +539,7 @@ describe('ssw CLI', () => {
       expect(cfg.code).toBe(0);
       expect(cfg.stdout).toContain('自动检查 关');
       const saved = JSON.parse(await fs.readFile(path.join(sswHome, 'update.json'), 'utf8'));
-      expect(saved).toEqual({ autoCheck: false, autoDownload: false });
+      expect(saved).toEqual({ autoCheck: false, autoDownload: false, skillsAutoCheck: true, skillsCheckIntervalHours: 6 });
 
       // 非法开关值报错、退出码非零
       const badVal = await cliWithEnv(env, 'update', '--auto-check', 'maybe');
@@ -548,5 +548,71 @@ describe('ssw CLI', () => {
     } finally {
       srv.close();
     }
+  });
+
+  it('skill update --check:空库提示;本地 git 仓库模拟上游更新后能查出落后(退出码 1)', async () => {
+    // 空库:没有 github 来源
+    const empty = await cli('skill', 'update', '--check');
+    expect(empty.code).toBe(0);
+    expect(empty.stdout).toContain('没有 github 来源');
+
+    // 造本地 git "远程"(bare)+ 工作仓库,克隆进库目录并写注册表条目(全程不触网)
+    const git = (args: string[]) => execFileP('git', args);
+    const remoteDir = path.join(sswHome, '..', 'remote-cli-upd.git');
+    const workDir = path.join(sswHome, '..', 'work-cli-upd');
+    await git(['init', '--bare', '-b', 'main', remoteDir]);
+    await git(['init', '-b', 'main', workDir]);
+    await fs.mkdir(path.join(workDir, 'demo'), { recursive: true });
+    await fs.writeFile(path.join(workDir, 'demo', 'SKILL.md'), '---\nname: demo\ndescription: d\n---\n\n# demo\n');
+    await git(['-C', workDir, 'add', '.']);
+    await git(['-C', workDir, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', 'init']);
+    await git(['-C', workDir, 'remote', 'add', 'origin', remoteDir]);
+    await git(['-C', workDir, 'push', '-u', 'origin', 'main']);
+    await git(['clone', remoteDir, path.join(sswHome, 'library', 'github__o__cli-upd')]);
+    await fs.writeFile(
+      path.join(sswHome, 'registry.json'),
+      JSON.stringify({
+        skills: [
+          {
+            id: 'o/cli-upd:demo',
+            name: 'demo',
+            description: 'd',
+            source: { type: 'github', uri: 'o/cli-upd' },
+            tags: [],
+            installedAt: new Date().toISOString(),
+          },
+        ],
+      }),
+    );
+
+    // 上游无新提交:已是最新,退出码 0
+    const fresh = await cli('skill', 'update', '--check');
+    expect(fresh.code).toBe(0);
+    expect(fresh.stdout).toContain('全部已是最新');
+
+    // 上游推一个新提交:查出落后,退出码 1(脚本可判断"需要更新"),输出引导一键更新
+    await fs.writeFile(path.join(workDir, 'demo', 'extra.md'), 'v2');
+    await git(['-C', workDir, 'add', '.']);
+    await git(['-C', workDir, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', 'v2']);
+    await git(['-C', workDir, 'push']);
+    const behind = await cli('skill', 'update', '--check');
+    expect(behind.code).toBe(1);
+    expect(behind.stdout).toContain('落后 1 个提交');
+    expect(behind.stdout).toContain('ssw skill update');
+
+    // 清理库外的 git fixture(afterEach 只清 sswHome/projectDir)
+    await fs.rm(remoteDir, { recursive: true, force: true });
+    await fs.rm(workDir, { recursive: true, force: true });
+  });
+
+  it('update --skills-check on|off:写 update.json 的技能库定时检查开关', async () => {
+    const off = await cli('update', '--skills-check', 'off');
+    expect(off.code).toBe(0);
+    expect(off.stdout).toContain('定时检查技能库 关');
+    const saved = JSON.parse(await fs.readFile(path.join(sswHome, 'update.json'), 'utf8'));
+    expect(saved.skillsAutoCheck).toBe(false);
+    // 再开回来
+    const on = await cli('update', '--skills-check', 'on', '--json');
+    expect(JSON.parse(on.stdout).skillsAutoCheck).toBe(true);
   });
 });

@@ -102,19 +102,29 @@ describe('pickAsset', () => {
 });
 
 describe('更新配置(update.json)', () => {
-  it('默认 autoCheck 开、autoDownload 关;损坏文件容错回默认', async () => {
-    expect(await readUpdateConfig()).toEqual({ autoCheck: true, autoDownload: false });
+  it('默认:软件自动检查开/自动下载关,技能库定时检查开(6h);损坏文件容错回默认', async () => {
+    const defaults = { autoCheck: true, autoDownload: false, skillsAutoCheck: true, skillsCheckIntervalHours: 6 };
+    expect(await readUpdateConfig()).toEqual(defaults);
     await fs.writeFile(updateFile(), '{oops', 'utf8');
-    expect(await readUpdateConfig()).toEqual({ autoCheck: true, autoDownload: false });
+    expect(await readUpdateConfig()).toEqual(defaults);
   });
 
-  it('saveUpdateConfig:部分更新持久化;非布尔值抛 UpdateError', async () => {
+  it('saveUpdateConfig:部分更新持久化;间隔越界收敛 1-168;类型错误抛 UpdateError', async () => {
     const c = await saveUpdateConfig({ autoDownload: true });
-    expect(c).toEqual({ autoCheck: true, autoDownload: true });
+    expect(c).toEqual({ autoCheck: true, autoDownload: true, skillsAutoCheck: true, skillsCheckIntervalHours: 6 });
     expect(JSON.parse(await fs.readFile(updateFile(), 'utf8'))).toEqual(c);
     expect(await readUpdateConfig()).toEqual(c); // 读回
+    // 技能库定时检查开关与间隔
+    const c2 = await saveUpdateConfig({ skillsAutoCheck: false, skillsCheckIntervalHours: 12 });
+    expect(c2.skillsAutoCheck).toBe(false);
+    expect(c2.skillsCheckIntervalHours).toBe(12);
+    expect((await saveUpdateConfig({ skillsCheckIntervalHours: 0 })).skillsCheckIntervalHours).toBe(1);
+    expect((await saveUpdateConfig({ skillsCheckIntervalHours: 9999 })).skillsCheckIntervalHours).toBe(168);
     await expect(
       saveUpdateConfig({ autoCheck: 'yes' as unknown as boolean }),
+    ).rejects.toThrow(UpdateError);
+    await expect(
+      saveUpdateConfig({ skillsCheckIntervalHours: '6' as unknown as number }),
     ).rejects.toThrow(UpdateError);
   });
 });

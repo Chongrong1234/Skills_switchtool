@@ -3,6 +3,19 @@
 本项目遵循语义化版本;版本号单一来源是 `package.json`。
 发布走 `npm run release`(干净工作区检查 → 全量测试 → 打 tag → 推送,tag 触发三平台 Release 构建)。
 
+## v1.7.0(2026-09-01)
+
+技能库更新系统:定时检查 github 来源 skills 的上游更新,一键更新全部——
+
+- **定时查询**(`src/serve.ts`):桌面 App/服务启动后 15s 首查,之后按间隔(默认 6h)定期检查;配置存 `update.json` 新增 `skillsAutoCheck`(默认开)/`skillsCheckIntervalHours`(默认 6,收敛 1-168),GUI 设置弹窗开关 + CLI `ssw update --skills-check on|off`;`setInterval(...).unref()` 不阻塞进程退出,全程静默不打扰
+- **core `checkLibraryUpdates`**(`src/core/library.ts`):github 来源 skills 按 owner/repo 分组(整仓一次 clone,多 skill 共享),逐仓 `git fetch` 后 `rev-list --count HEAD..@{u}` 比上游落后几个提交;浅克隆无上游信息时兜底 `rev-parse` 比 sha;并发调用共享同一次在途检查;单仓失败只记该仓 error 不影响其它仓,整体失败降级 `{ ok:false, message }` 不抛异常;结果存内存态 `GET /api/skills/updates` 随时可读
+- **一键更新**(`applyLibraryUpdates`):逐 skill 走既有 `updateSkill`(git pull + 重新注册,保留 useCount/stars 统计),可指定仓库子集;更新成功的仓库即时把内存态里 behind 清零
+- **REST**:`GET /api/skills/updates`(读内存态)、`POST /api/skills/updates/check`(立即检查)、`POST /api/skills/updates/apply`(可选 repoIds 子集)
+- **CLI**:`ssw skill update --check` 只检查不更新(列出落后仓库与提交数,有可更新时退出码 1 并引导 `ssw skill update`);`ssw skill update` 不带参数照旧更新全部
+- **TUI**:技能库视图标题带可更新徽标(落后仓库数),`U` 键两步——先检查,有可更新再按 `U` 一键更新全部
+- **桌面 GUI**:技能库页工具栏新增「检查更新」「一键更新全部」按钮 + 顶部提示条(落后仓库数);设置弹窗「软件更新」区新增技能库自动检查开关
+- `runGit` 改为返回 stdout(供 rev-list/rev-parse 取输出),既有调用方不受影响
+
 ## v1.6.0(2026-09-01)
 
 推荐库接入 GitHub 联网搜索:
