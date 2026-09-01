@@ -92,6 +92,8 @@ url=$(curl -s https://api.github.com/repos/Chongrong1234/Skills_switchtool/relea
 
 浏览器直接下载:[Skills.SwitchTool.Setup.1.7.0.exe](https://github.com/Chongrong1234/Skills_switchtool/releases/download/v1.7.0/Skills.SwitchTool.Setup.1.7.0.exe),双击按向导安装(可选安装目录)。
 
+> 安装包**未签名**,Windows SmartScreen 可能提示「Windows 已保护你的电脑」——属预期,点「更多信息」→「仍要运行」即可。
+
 或在 PowerShell 中复制粘贴:
 
 ```powershell
@@ -105,8 +107,14 @@ curl.exe -L -o Skills.SwitchTool.Setup.exe `
 ```bash
 curl -L -o Skills.SwitchTool.dmg \
   https://github.com/Chongrong1234/Skills_switchtool/releases/download/v1.7.0/Skills.SwitchTool-1.7.0-arm64.dmg
-open Skills.SwitchTool.dmg    # 拖进「应用程序」;未签名,首次打开需右键 →「打开」
+open Skills.SwitchTool.dmg    # 拖进「应用程序」
 ```
+
+> **未签名**构建:若 macOS 提示「已损坏,无法打开」(下载的未签名应用会被隔离,右键「打开」往往不够),执行一次去隔离即可:
+>
+> ```bash
+> xattr -cr "/Applications/Skills SwitchTool.app"
+> ```
 
 ### 服务器 / CLI 单文件(零依赖)
 
@@ -200,7 +208,7 @@ npm run dist:cli     # 产出 release/cli/ssw.mjs(esbuild 打包,零依赖,Node 
 |---|---|---|
 | Linux | `release/Skills SwitchTool-<版本>.AppImage` | `npm run dist` |
 | Windows | `release/Skills SwitchTool Setup <版本>.exe`(NSIS,中文安装界面) | `npx electron-builder --win nsis`,或 CI |
-| macOS | dmg + zip(**未签名**:首次打开需右键 →「打开」) | CI(macOS runner) |
+| macOS | dmg + zip(**未签名**:若提示「已损坏」先 `xattr -cr`,见上文) | CI(macOS runner) |
 | 任意(含服务器) | `release/cli/ssw.mjs`(零依赖单文件 CLI) | `npm run dist:cli` |
 
 **Windows 特别说明**:

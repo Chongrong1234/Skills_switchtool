@@ -92,6 +92,8 @@ url=$(curl -s https://api.github.com/repos/Chongrong1234/Skills_switchtool/relea
 
 Download in your browser: [Skills.SwitchTool.Setup.1.7.0.exe](https://github.com/Chongrong1234/Skills_switchtool/releases/download/v1.7.0/Skills.SwitchTool.Setup.1.7.0.exe), double-click and follow the wizard (custom install directory supported).
 
+> The installer is **unsigned**, so Windows SmartScreen may show “Windows protected your PC” — this is expected; click **More info → Run anyway**.
+
 Or copy-paste in PowerShell:
 
 ```powershell
@@ -105,8 +107,14 @@ curl.exe -L -o Skills.SwitchTool.Setup.exe `
 ```bash
 curl -L -o Skills.SwitchTool.dmg \
   https://github.com/Chongrong1234/Skills_switchtool/releases/download/v1.7.0/Skills.SwitchTool-1.7.0-arm64.dmg
-open Skills.SwitchTool.dmg    # drag into Applications; unsigned — right-click → Open on first launch
+open Skills.SwitchTool.dmg    # drag into Applications
 ```
+
+> The build is **unsigned**. If macOS says the app “is damaged and can’t be opened” (quarantine on downloaded unsigned apps — right-click → Open is often not enough), remove the quarantine flag once:
+>
+> ```bash
+> xattr -cr "/Applications/Skills SwitchTool.app"
+> ```
 
 ### Server / single-file CLI (zero dependencies)
 
@@ -200,7 +208,7 @@ Copy `ssw.mjs` to any server and run it (`./ssw.mjs agents` or `node ssw.mjs age
 |---|---|---|
 | Linux | `release/Skills SwitchTool-<version>.AppImage` | `npm run dist` |
 | Windows | `release/Skills SwitchTool Setup <version>.exe` (NSIS, Chinese installer UI) | `npx electron-builder --win nsis`, or CI |
-| macOS | dmg + zip (**unsigned**: right-click → Open on first launch) | CI (macOS runner) |
+| macOS | dmg + zip (**unsigned**: if “damaged”, run `xattr -cr` on the .app — see above) | CI (macOS runner) |
 | Any (incl. servers) | `release/cli/ssw.mjs` (zero-dependency single-file CLI) | `npm run dist:cli` |
 
 **Windows notes**:
