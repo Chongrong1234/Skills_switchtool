@@ -425,6 +425,22 @@ describe('ssw CLI', () => {
     expect(bad.stderr).toContain('--kind');
   });
 
+  it('catalog --github/--ai 必须配合 --q(联网路径由 core/server 注入假 fetch 覆盖,这里只测参数校验)', async () => {
+    for (const flag of ['--github', '--ai']) {
+      const r = await cli('catalog', flag);
+      expect(r.code).not.toBe(0);
+      expect(r.stderr).toContain('--q');
+    }
+    // 不带联网开关时输出末尾给引导;--json 不含 github 字段(向后兼容)
+    const plain = await cli('catalog', '--q', 'superpowers');
+    expect(plain.code).toBe(0);
+    expect(plain.stdout).toContain('superpowers');
+    expect(plain.stdout).toContain('--github');
+    const js = await cli('catalog', '--q', 'superpowers', '--json');
+    expect(js.code).toBe(0);
+    expect(JSON.parse(js.stdout).github).toBeUndefined();
+  });
+
   it('skill 支持 id|name 寻址:bind/remove 可用名称;不存在时报错含引导', async () => {
     await cli('skill', 'init', '--name', 'byname', '--desc', 'x');
     await cli('project', 'create', '--name', 'np', '--path', projectDir, '--agents', 'claude-code');

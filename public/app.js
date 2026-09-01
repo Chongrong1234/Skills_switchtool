@@ -14,6 +14,7 @@ const state = {
   catalogCategory: '',     // 推荐库当前分类过滤('' = 全部)
   catalogKind: '',         // 推荐库当前类型过滤('' = 全部,'skill'/'mcp' 分流浏览与安装)
   catalogQuery: '',        // 推荐库当前搜索词
+  catalogGithub: null,     // 推荐库联网搜索结果 {query, ai, loading, data},null = 未搜索;离开推荐库视图时清空
   serverCwd: null,         // /api/meta 缓存:服务进程 cwd,新建项目预填路径用
   aiBox: null,             // 项目详情 AI 推荐区的最近结果 {projectId, requirement, rec}:render 重绘后保留,支持反复调用/多次操作
   update: null,            // /api/update/status 缓存 {current, config, last, download}:侧栏更新横幅数据源
@@ -1267,6 +1268,91 @@ async function loadCatalog() {
   state.catalog = await api('GET', '/api/catalog');
 }
 
+/**
+ * 推荐库联网搜索:q 取当前搜索框内容;ai=true 让服务端先提炼英文关键词再搜。
+ * 结果存 state.catalogGithub(renderCatalog 重绘时恢复);失败也落成带 message 的空结果,不弹错。
+ */
+async function runCatalogGithubSearch(ai) {
+  const q = state.catalogQuery.trim();
+  if (!q) return toast('请先输入搜索词或需求描述', 'err');
+  state.catalogGithub = { query: q, ai, loading: true, data: null };
+  renderCatalog(); // 立即渲染 loading 态(输入框内容由 state.catalogQuery 恢复)
+  try {
+    const data = await api('GET', `/api/catalog/github?q=${encodeURIComponent(q)}${ai ? '&ai=1' : ''}`);
+    state.catalogGithub = { query: q, ai, loading: false, data };
+  } catch (err) {
+    state.catalogGithub = { query: q, ai, loading: false, data: { items: [], keywords: [], ai: false, message: err.message } };
+  }
+  renderCatalog();
+}
+
+/** 联网搜索结果区块(渲染在本地目录上方;安装按钮走 POST /api/skills 整仓安装) */
+function catalogGithubHtml() {
+  const g = state.catalogGithub;
+  if (!g) return '';
+  if (g.loading) {
+    return `<div class="section" id="cat-gh"><h3>GitHub 联网搜索:「${esc(g.query)}」</h3>
+      <div class="spinner"></div><div class="loading-text">${g.ai ? 'AI 正在提炼关键词并搜索 GitHub…' : '正在联网搜索 GitHub…'}</div></div>`;
+  }
+  const d = g.data;
+  if (!d) return '';
+  const kwTxt = d.ai
+    ? `AI 提炼关键词: ${esc(d.keywords.join(', '))}${d.model ? `(${esc(d.model)})` : ''}`
+    : (d.keywords.length ? `关键词: ${esc(d.keywords.join(', '))}` : '');
+  const cards = d.items.map((r) => `
+    <div class="skill-card">
+      <div class="chead">
+        <span class="sname">${esc(r.repo)}</span>
+        <span class="rstars">★ ${r.stars}</span>
+      </div>
+      <div class="sdesc">${esc(r.description)}</div>
+      <div class="smeta">
+        <span class="tag">命中: ${esc(r.keyword)}</span>
+        ${r.installed ? `<span class="tag">已安装 ${r.installedCount}</span>` : ''}
+      </div>
+      <div class="cbtns">
+        <button class="btn btn-sm btn-primary" data-gh-install="${esc(r.repo)}" ${r.installed ? 'disabled' : ''}>${r.installed ? `已安装(${r.installedCount})` : '安装'}</button>
+        <a class="btn btn-sm" href="${esc(r.url)}" target="_blank" rel="noopener">仓库 ↗</a>
+      </div>
+    </div>`).join('');
+  return `
+    <div class="section" id="cat-gh">
+      <h3>GitHub 联网搜索:「${esc(g.query)}」(${d.items.length} 个结果)${kwTxt ? ` <span class="rdesc">${kwTxt}</span>` : ''}
+        <button class="btn btn-sm" id="cat-gh-clear" style="margin-left:8px">清除</button></h3>
+      ${d.message ? `<div class="rdesc" style="margin-bottom:8px">${esc(d.message)}</div>` : ''}
+      ${d.items.length ? `<div class="skills-grid">${cards}</div>` : '<div class="empty">没有匹配的仓库,换个关键词或需求再试</div>'}
+    </div>`;
+}
+
+/** 联网搜索结果的安装/清除按钮绑定(renderCatalog 每次重绘后调用) */
+function bindCatalogGithub(main) {
+  const clearBtn = main.querySelector('#cat-gh-clear');
+  if (clearBtn) clearBtn.addEventListener('click', () => {
+    state.catalogGithub = null;
+    renderCatalog();
+  });
+  main.querySelectorAll('[data-gh-install]').forEach((btn) =>
+    btn.addEventListener('click', () => run(async () => {
+      btn.disabled = true;
+      btn.textContent = '安装中…';
+      try {
+        // 不指定 subdir:服务端 installFromGithub 会先扫根/第一层,落空自动探测 skills/ 等合集子目录
+        const installed = await apiWithProgress('POST', '/api/skills', { source: 'github', uri: btn.dataset.ghInstall });
+        await loadAll();
+        state.catalog = null; // 本地条目的 installed 标记已变化,触发重拉
+        const d = state.catalogGithub?.data;
+        const item = d?.items.find((i) => i.repo === btn.dataset.ghInstall);
+        if (item) { item.installed = true; item.installedCount = installed.length; } // 结果卡片原地转禁用态
+        toast(`已安装 ${installed.length} 个 skill,到项目页绑定后 apply 生效`);
+        render();
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = '安装';
+        throw err;
+      }
+    })));
+}
+
 /** 当前过滤条件下的条目(类型 + 分类 + 关键词均在本地过滤,数据来自一次拉取) */
 function catalogFiltered() {
   const q = state.catalogQuery.trim().toLowerCase();
@@ -1363,7 +1449,9 @@ function renderCatalog() {
     <div class="main-title">推荐库</div>
     <div class="main-sub">精选高 star 的 skills 仓库与常用 MCP 服务:skill 一键安装到中央库(整仓登记);MCP 一键加入中央注册表,绑定项目后 apply 写入各 agent 配置</div>
     <div class="cat-toolbar">
-      <input type="text" id="cat-q" placeholder="搜索名称 / 描述 / 仓库…" value="${esc(state.catalogQuery)}" />
+      <input type="text" id="cat-q" placeholder="搜索名称 / 描述 / 仓库;也可输入需求,点右侧按钮联网搜 GitHub…" value="${esc(state.catalogQuery)}" />
+      <button class="btn btn-sm" id="cat-gh-search">GitHub 搜索</button>
+      <button class="btn btn-sm" id="cat-ai-search" title="用「设置」里配置的模型把需求提炼成英文关键词再搜">AI 搜索</button>
     </div>
     <div class="cat-tabs">
       ${kindTabs.map((k) => `
@@ -1378,6 +1466,7 @@ function renderCatalog() {
         <button class="cat-tab ${state.catalogCategory === c.id ? 'active' : ''}" data-cat="${esc(c.id)}">${esc(c.name)} (${n})</button>`;
       }).join('')}
     </div>
+    ${catalogGithubHtml()}
     <div class="skills-grid" id="cat-list">${catalogCardsHtml()}</div>
   `;
   main.querySelector('#cat-q').addEventListener('input', (e) => {
@@ -1396,6 +1485,10 @@ function renderCatalog() {
       main.querySelectorAll('[data-cat]').forEach((x) => x.classList.toggle('active', x === t));
       refreshCatalogCards(main);
     }));
+  // 联网搜索:GitHub 直连 / AI 提炼关键词后搜(结果区块渲染在目录上方)
+  main.querySelector('#cat-gh-search').addEventListener('click', () => run(() => runCatalogGithubSearch(false)));
+  main.querySelector('#cat-ai-search').addEventListener('click', () => run(() => runCatalogGithubSearch(true)));
+  bindCatalogGithub(main);
   bindCatalogInstalls(main);
 }
 
@@ -1685,6 +1778,7 @@ document.querySelectorAll('.view-btn').forEach((b) =>
   b.addEventListener('click', () => {
     state.view = b.dataset.view;
     if (state.view === 'catalog') state.catalog = null; // 每次进入重拉,保证 installed 标记新鲜
+    else state.catalogGithub = null; // 离开推荐库时清掉联网搜索结果(下次进入是干净的目录视图)
     render();
   }));
 document.getElementById('btn-new-project').addEventListener('click', openNewProjectModal);

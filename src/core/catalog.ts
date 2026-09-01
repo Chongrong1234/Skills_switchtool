@@ -22,8 +22,15 @@
  *   seb1n/awesome-ai-agent-skills、SamurAIGPT/Generative-Media-Skills、google-labs-code/stitch-skills)。
  * MCP 条目标准:npm 包名/远端端点经 npm registry 与官方文档逐一核验(2026-08),优先官方与官方托管;
  * 托管端点核验方式为探测其存活(401/400 即服务在线),密钥一律占位符。
+ *
+ * searchCatalogGithub:推荐库的联网搜索——按关键词搜 GitHub 的 topic:agent-skills 仓库
+ * (复用 recommend 的 24h 缓存),结果带仓库链接,已入库仓库只标记 installed 不排除;
+ * ai:true 时先让已配置的 AI 把自然语言需求提炼成英文关键词(aiExtractGithubKeywords),
+ * 提炼失败/未配置自动降级为需求英文词兜底,再不行整句直搜;一切失败降级空数组 + message 不抛。
  */
+import { aiExtractGithubKeywords, fallbackGithubKeywords } from './ai.js';
 import { readMcps } from './mcps.js';
+import { searchGithubSkillsCached } from './recommend.js';
 import { readRegistry } from './registry.js';
 
 export interface CatalogCategory {
@@ -307,4 +314,106 @@ export async function listCatalogWithInstalled(filter: CatalogFilter = {}): Prom
     const count = registry.filter((s) => s.id.toLowerCase().startsWith(prefix)).length;
     return { ...e, installed: count > 0, installedCount: count };
   });
+}
+
+/** GitHub 联网搜索结果条目(推荐库「GitHub 搜索」;链接直达仓库,可一键安装) */
+export interface CatalogGithubItem {
+  repo: string;        // owner/repo
+  name: string;
+  url: string;
+  stars: number;
+  description: string;
+  keyword: string;     // 命中的搜索关键词(AI 提炼或需求兜底)
+  installed: boolean;  // 库中已有该仓库的条目(不排除,仅标记——与本地条目卡片语义一致)
+  installedCount: number;
+}
+
+export interface CatalogGithubSearchResult {
+  items: CatalogGithubItem[];
+  keywords: string[]; // 实际使用的搜索词(提炼失败时可能是兜底词或需求整句)
+  ai: boolean;        // 关键词是否确实由 AI 提炼(false = 直连或兜底)
+  model?: string;
+  message?: string;   // 降级说明(未配置 AI/限流/断网/无结果等)
+}
+
+/** 单次联网搜索返回的仓库上限 */
+export const MAX_CATALOG_GITHUB_RESULTS = 12;
+
+export interface CatalogGithubSearchOptions {
+  /** true = 先用已配置的 AI 把自然语言需求提炼成英文关键词再搜(失败自动降级) */
+  ai?: boolean;
+  /** 测试注入;缺省用全局 fetch */
+  fetchImpl?: typeof fetch;
+}
+
+/**
+ * 推荐库联网搜索:按关键词搜 GitHub 的 topic:agent-skills 仓库(24h 缓存复用 recommend.ts),
+ * 多关键词结果合并去重(full_name 小写)、按 star 降序、上限 MAX_CATALOG_GITHUB_RESULTS。
+ * 已入库的仓库只标 installed 不排除(用户可能想更新/重装);一切失败降级空数组 + message,不抛异常。
+ */
+export async function searchCatalogGithub(
+  query: string,
+  options: CatalogGithubSearchOptions = {},
+): Promise<CatalogGithubSearchResult> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const q = query.trim();
+  if (!q) return { items: [], keywords: [], ai: false, message: '请输入搜索词或需求描述' };
+
+  // ---- 搜索词:ai 模式先让模型提炼;失败/未配置降级为需求英文词兜底,再不行整句直搜 ----
+  let keywords: string[] = [];
+  let ai = false;
+  let model: string | undefined;
+  let message: string | undefined;
+  if (options.ai) {
+    const r = await aiExtractGithubKeywords(q, fetchImpl);
+    model = r.model;
+    if (r.keywords.length) {
+      keywords = r.keywords;
+      ai = true;
+    }
+    message = r.message; // 提炼失败的说明(AI 不可用不代表不能搜,直连兜底继续)
+  }
+  if (!keywords.length) keywords = fallbackGithubKeywords(q);
+  if (!keywords.length) keywords = [q.slice(0, 40)]; // 纯中文需求:整句交给 GitHub 搜索
+
+  try {
+    const perKw = await Promise.all(keywords.map((kw) => searchGithubSkillsCached(`topic:agent-skills ${kw}`, fetchImpl)));
+    const registry = await readRegistry();
+    const countOf = (repo: string): number => {
+      const prefix = `${repo.toLowerCase()}:`;
+      return registry.filter((s) => s.id.toLowerCase().startsWith(prefix)).length;
+    };
+    const seen = new Set<string>();
+    const items: CatalogGithubItem[] = [];
+    for (let i = 0; i < keywords.length; i++) {
+      for (const r of perKw[i]) {
+        const key = r.full_name.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const installedCount = countOf(r.full_name);
+        items.push({
+          repo: r.full_name,
+          name: r.name,
+          url: r.html_url,
+          stars: r.stargazers_count,
+          description: r.description ?? '',
+          keyword: keywords[i],
+          installed: installedCount > 0,
+          installedCount,
+        });
+      }
+    }
+    items.sort((a, b) => b.stars - a.stars);
+    const sliced = items.slice(0, MAX_CATALOG_GITHUB_RESULTS);
+    if (!sliced.length && !message) message = 'GitHub 上没有找到匹配的 agent-skills 仓库(换个关键词试试)';
+    return { items: sliced, keywords, ai, model, message };
+  } catch (err) {
+    return {
+      items: [],
+      keywords,
+      ai,
+      model,
+      message: `GitHub 搜索不可用(已降级): ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
 }

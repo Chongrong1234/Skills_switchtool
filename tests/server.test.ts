@@ -242,6 +242,40 @@ describe('server 校验(与 CLI 行为对齐)', () => {
     expect(bad.data.error).toContain('kind');
   });
 
+  it('GET /api/catalog/github:q 必填;联网搜索结果带链接/installed 标记(GitHub API 走假 fetch)', async () => {
+    // q 缺失或全空白 → 400
+    expect((await api('GET', '/api/catalog/github')).status).toBe(400);
+    expect((await api('GET', '/api/catalog/github?q=%20')).status).toBe(400);
+
+    const realFetch = globalThis.fetch;
+    vi.stubGlobal('fetch', (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('api.github.com/search/repositories')) {
+        return new Response(JSON.stringify({ items: [
+          { full_name: 'x/pdf-skills', name: 'pdf-skills', html_url: 'https://github.com/x/pdf-skills', stargazers_count: 42, description: 'pdf 技能' },
+        ] }), { status: 200 });
+      }
+      return realFetch(input, init);
+    }) as typeof fetch);
+    try {
+      const r = await api('GET', '/api/catalog/github?q=pdf');
+      expect(r.status).toBe(200);
+      expect(r.data.items).toHaveLength(1);
+      expect(r.data.items[0].repo).toBe('x/pdf-skills');
+      expect(r.data.items[0].url).toBe('https://github.com/x/pdf-skills');
+      expect(r.data.items[0].installed).toBe(false);
+      expect(r.data.ai).toBe(false);
+      // ai=1 未配置 key:降级直连,仍 200 返回(message 说明,不抛错)
+      const degraded = await api('GET', '/api/catalog/github?q=pdf&ai=1');
+      expect(degraded.status).toBe(200);
+      expect(degraded.data.ai).toBe(false);
+      expect(degraded.data.message).toContain('未配置 AI');
+      expect(degraded.data.items).toHaveLength(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('AI 端点:配置读写掩码不回原文;非法 baseUrl 400;recommend 校验与降级', async () => {
     // 初始:未配置 key,带预设清单,不含 apiKey 原文字段
     const init = await api('GET', '/api/ai/config');

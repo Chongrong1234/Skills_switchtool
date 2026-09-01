@@ -311,9 +311,10 @@ body {
 .toolbar { display: flex; gap: 10px; margin: 18px 0; flex-wrap: wrap; }
 
 /* ---------- 推荐库 ---------- */
-.cat-toolbar { margin: 16px 0 10px; }
+.cat-toolbar { display: flex; align-items: center; gap: 8px; margin: 16px 0 10px; }
 .cat-toolbar input {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -321,6 +322,10 @@ body {
   padding: 8px 12px;
   font-size: 13px;
 }
+.cat-toolbar .btn { white-space: nowrap; }
+/* 联网搜索结果区块:紧贴过滤标签下方、本地目录上方 */
+#cat-gh { margin-top: 0; margin-bottom: 18px; }
+#cat-gh h3 { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
 .cat-tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
 .cat-tab {
   border: 1px solid var(--border);

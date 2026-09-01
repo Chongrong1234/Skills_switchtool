@@ -53,7 +53,7 @@ How it works: **one central library + per-project skill sets + materialization i
 | 🌐 **Global sharing** | Beyond project recipes, selected skills can be materialized to each agent's **user-level** directory (`~/.claude/skills` etc.): configure once, shared by every project of that agent |
 | 📦 **Move the whole library** | `ssw profile export/import` packs the skill library + MCP + project profiles + global profile into a single file — the same setup across machines and platforms; idempotent import |
 | 🤝 **Adopt existing skills** | `ssw skill adopt` pulls skills already sitting in agent directories into the central library — adopt first, then distribute centrally; `--all` scans every agent (deduped by name); the desktop app **auto-adopts on startup** the user-level skills of every agent on the machine, visible as soon as it opens |
-| 🔍 **Smart recommendations + built-in catalog** | Detects the project's tech stack and recommends high-star GitHub skills; also ships 111 curated skill repos + 26 common MCP servers in 13 categories (with per-category counts), skills and MCP browsed/installed separately, works offline; degrades quietly without network |
+| 🔍 **Smart recommendations + built-in catalog** | Detects the project's tech stack and recommends high-star GitHub skills; also ships 111 curated skill repos + 26 common MCP servers in 13 categories (with per-category counts), skills and MCP browsed/installed separately, works offline; the catalog also **searches GitHub live** (results link straight to the repos), and with `--ai` your configured model distills the best keywords from a natural-language requirement before searching; degrades quietly without network |
 | 🤖 **AI skill recommendations** | Describe your needs; AI reads the local library and recommends skills to tick & bind, and also **searches GitHub online** (model-provided keywords, falling back to English words from your text; one-click install & bind); callable repeatedly from the new-project dialog and the **project detail page**; model/base URL/API key in settings — official endpoints or any OpenAI-compatible relay (presets: Kimi/DeepSeek/OpenAI/OpenRouter); degrades quietly when unconfigured or offline |
 | 🔥 **Optional popularity ranking** | Frequently used skills float to the top: per-skill usage counts (counted on bind, never decrease), GitHub stars (collected on install/update), weighted with project tech-stack and name keyword matching; AI recommendations also use stars/usage as a tie-breaker |
 | ⬆️ **Auto-update** | Checks GitHub Releases for new versions (6h cache, degrades quietly offline); a sidebar banner + the settings dialog show the new release and can download the installer for your platform with one click (progress bar included), with optional auto-check on launch and auto-download; same via `ssw update` on the CLI or the `U` key in the TUI |
@@ -69,7 +69,7 @@ All releases live on the [GitHub Releases](https://github.com/Chongrong1234/Skil
 ```bash
 # Download
 curl -L -o Skills.SwitchTool.AppImage \
-  https://github.com/Chongrong1234/Skills_switchtool/releases/download/v1.5.0/Skills.SwitchTool-1.5.0.AppImage
+  https://github.com/Chongrong1234/Skills_switchtool/releases/download/v1.6.0/Skills.SwitchTool-1.6.0.AppImage
 
 # Make it executable and run (or double-click in your file manager)
 chmod +x Skills.SwitchTool.AppImage
@@ -89,13 +89,13 @@ url=$(curl -s https://api.github.com/repos/Chongrong1234/Skills_switchtool/relea
 
 ### Windows desktop (NSIS installer, Chinese wizard)
 
-Download in your browser: [Skills.SwitchTool.Setup.1.5.0.exe](https://github.com/Chongrong1234/Skills_switchtool/releases/download/v1.5.0/Skills.SwitchTool.Setup.1.5.0.exe), double-click and follow the wizard (custom install directory supported).
+Download in your browser: [Skills.SwitchTool.Setup.1.6.0.exe](https://github.com/Chongrong1234/Skills_switchtool/releases/download/v1.6.0/Skills.SwitchTool.Setup.1.6.0.exe), double-click and follow the wizard (custom install directory supported).
 
 Or copy-paste in PowerShell:
 
 ```powershell
 curl.exe -L -o Skills.SwitchTool.Setup.exe `
-  "https://github.com/Chongrong1234/Skills_switchtool/releases/download/v1.5.0/Skills.SwitchTool.Setup.1.5.0.exe"
+  "https://github.com/Chongrong1234/Skills_switchtool/releases/download/v1.6.0/Skills.SwitchTool.Setup.1.6.0.exe"
 .\Skills.SwitchTool.Setup.exe        # wizard install; silent install: .\Skills.SwitchTool.Setup.exe /S
 ```
 
@@ -103,7 +103,7 @@ curl.exe -L -o Skills.SwitchTool.Setup.exe `
 
 ```bash
 curl -L -o Skills.SwitchTool.dmg \
-  https://github.com/Chongrong1234/Skills_switchtool/releases/download/v1.5.0/Skills.SwitchTool-1.5.0-arm64.dmg
+  https://github.com/Chongrong1234/Skills_switchtool/releases/download/v1.6.0/Skills.SwitchTool-1.6.0-arm64.dmg
 open Skills.SwitchTool.dmg    # drag into Applications; unsigned — right-click → Open on first launch
 ```
 
@@ -175,13 +175,13 @@ ssw        # or skills — a keyboard-driven visual panel
 ↑↓ browse projects · Enter switches & applies (skill set written into each agent's directory)
 n new project (name/path/agents/mode, optional AI requirement auto-recommended & bound)
 x delete project / a apply / u unapply / r rollback
-s skill library / m MCP registry / c built-in catalog (c cycle categories, k toggle skills/MCP)
+s skill library / m MCP registry / c built-in catalog (c cycle categories, k toggle skills/MCP, / GitHub search, i AI search)
 i AI recommend / g global sharing / d doctor / q quit
 ```
 
 The panel, the subcommands and the desktop app all share the same state (`~/.skills-switch/`) — a change anywhere is visible everywhere.
 
-Plain subcommands target scripting & automation (running bare in a non-TTY prints help). Common ones: `doctor` environment check, `project create/switch/apply`, `skill add/list/adopt`, `catalog install`, `mcp add`, `global apply`, `profile export/import`, `ai recommend`, `update` self-update check/download, etc.; the full list and flags are under `ssw --help` or `ssw <command> --help`. Conventions: projects and skills are addressed by `id|name`; global `--json` output for scripting; errors go to stderr with a non-zero exit code.
+Plain subcommands target scripting & automation (running bare in a non-TTY prints help). Common ones: `doctor` environment check, `project create/switch/apply`, `skill add/list/adopt`, `catalog install`, `catalog --q ... --github [--ai]` online catalog search, `mcp add`, `global apply`, `profile export/import`, `ai recommend`, `update` self-update check/download, etc.; the full list and flags are under `ssw --help` or `ssw <command> --help`. Conventions: projects and skills are addressed by `id|name`; global `--json` output for scripting; errors go to stderr with a non-zero exit code.
 
 Local use: after `npm run build`, run `node dist/cli.js ...` (or `npm link` to use `ssw ...` / `skills ...` directly).
 

@@ -31,7 +31,7 @@ import {
   setProjectSkills,
   updateProject,
 } from './core/projects.js';
-import { listCatalogCategories, listCatalogWithInstalled } from './core/catalog.js';
+import { listCatalogCategories, listCatalogWithInstalled, searchCatalogGithub } from './core/catalog.js';
 import { exportSkillsCode, importSkillsCode, parseSkillsCode } from './core/migrate.js';
 import { listMcps, McpError, removeMcp, upsertMcp } from './core/mcps.js';
 import { recommendForProject } from './core/recommend.js';
@@ -364,6 +364,14 @@ export function createApp(): express.Express {
       categories: listCatalogCategories(),
       items: await listCatalogWithInstalled({ category, query, kind }),
     });
+  }));
+
+  // 推荐库联网搜索:q 为搜索词或自然语言需求;ai=1 时先用已配置的 AI 提炼英文关键词再搜。
+  // 结果带仓库链接与 installed 标记;降级(断网/未配置 AI)返回 200 + message,不抛错
+  app.get('/api/catalog/github', h(async (req, res) => {
+    const q = String(req.query.q ?? '').trim();
+    if (!q) return void res.status(400).json({ error: 'q 必填(搜索词或需求描述)' });
+    res.json(await searchCatalogGithub(q, { ai: req.query.ai === '1' }));
   }));
 
   // ---- recommend ----

@@ -4,7 +4,7 @@
 
 ## 项目概述
 
-**Skills SwitchTool**(`skills-switchtool`,v1.5.0):项目中心化的 Agent Skills 管理工具。交互模式仿照 cc-switch:**中央存储 + 切换 + 写入目标工具配置位置 + 快照可回滚**。
+**Skills SwitchTool**(`skills-switchtool`,v1.6.0):项目中心化的 Agent Skills 管理工具。交互模式仿照 cc-switch:**中央存储 + 切换 + 写入目标工具配置位置 + 快照可回滚**。
 
 核心概念:
 
@@ -120,7 +120,9 @@ src/
                          #   extractJson 共享解析器,parseAiRecommendations 容忍围栏/裸数组/解释文字,
                          #   幻觉 id 丢弃,上限 8 个;testAiConnection 走同款最小 chat 请求(测过即推荐可用);
                          #   fetchImpl 可注入(测试);一切失败降级 { items: [], github: [], message } 不抛异常;
-                         #   AiError(配置校验)映射 400
+                         #   AiError(配置校验)映射 400;
+                         #   aiExtractGithubKeywords:只提炼 GitHub 搜索英文关键词(不读技能库,
+                         #   推荐库「AI 搜索」用;未配置 key/失败降级空 keywords,由调用方兜底直搜)
     rank.ts              # 热度排序:skillScore(使用次数×10 > 项目关键词匹配×6 > log10(stars)×4)+
                          #   rankSkills 稳定降序;projectRankContext 复用 detectTechStack + 项目名分词
     migrate.ts           # 迁移码:ssw1:owner/repo,... 仅含 github 来源,按仓库去重;
@@ -140,7 +142,12 @@ src/
                          #   installed 标记按 mcps.json 同名判断;listCatalogCategories() 分类统计
                          #   (count/skills/mcps)供 GUI 标签角标、CLI catalog categories、TUI 分类切换共用;
                          #   CatalogFilter.kind(catalogEntryKind 口径,缺省视为 skill)把 skills 与 MCP
-                         #   的浏览/安装分流:REST ?kind=、CLI --kind、TUI k 键、GUI 类型标签页共用
+                         #   的浏览/安装分流:REST ?kind=、CLI --kind、TUI k 键、GUI 类型标签页共用;
+                         #   searchCatalogGithub(q, {ai, fetchImpl}):联网搜 GitHub topic:agent-skills
+                         #   仓库(复用 recommend 24h 缓存,多词合并去重、star 降序、上限 12;
+                         #   已入库只标 installed 不排除;ai:true 先用 aiExtractGithubKeywords 提炼
+                         #   英文词,失败/未配置降级需求英文词兜底、再不行整句直搜;
+                         #   一切失败降级空+message 不抛)
     doctor.ts            # 环境自检 runDoctor():数据目录可写/git 探活(spawn git --version,10s 超时)/
                          #   agent 检测(排除恒真的 'agents')/五个 JSON 数据文件健康度(缺失=首用 ok,
                          #   损坏=error 附修复 hint——运行时被 readJsonSafe 容错吞掉的损坏在这里暴露)+ 统计;
@@ -185,6 +192,8 @@ src/
                          #   /api/mcps CRUD + /api/projects/:id/mcps 绑定(校验名字在注册表存在);
                          #   /api/global GET/PUT + apply/unapply/rollback;/api/profile/export|import;
                          #   GET /api/catalog[?category=&q=&kind=skill|mcp]:推荐库,kind 把 skills 与 MCP 分流;
+                         #   GET /api/catalog/github?q=<>&ai=1:推荐库联网搜索(q 必填 400;ai=1 先 AI
+                         #   提炼关键词;降级 200 + message);
                          #   GET /api/progress:git clone/pull + 更新下载任务进度(前端进度条轮询);
                          #   GET /api/skills?rank=1[&forProject=id] 热度排序(不带 rank 保持原顺序);
                          #   POST /api/skills/adopt 收养 agent 目录既有 skills;{ all: true } 一次
@@ -211,6 +220,8 @@ src/
                          #   mcp list/add/remove(--command 与 --url 二选一,--env/--header 逗号分隔 KEY=V,--cwd 仅部分 agent 支持)
                          #   + project bind-mcp;catalog install 按条目 kind 分流:skill 整仓安装,mcp 写注册表;
                          #   catalog 列表 --kind skill|mcp 把两类条目的浏览/安装分开(非法值报错);
+                         #   catalog --q <词> --github 联网搜 GitHub(--ai 先提炼关键词,蕴含 --github;
+                         #   不带 --q 报错;输出带仓库链接与安装指引);
                          #   catalog categories 分类清单(count/skills/mcps 统计,--category 的 id 来源);
                          #   skill init [--name --desc] [--content 文本|--file 路径](粘贴现成 SKILL.md 均可);
                          #   skill list 带 ★stars/用N次 热度标记;
@@ -228,6 +239,8 @@ src/
                          #   填了需求则 AI 推荐并整体绑定;x 删除项目档案:y 二次确认,只删档案不动磁盘文件;
                          #   g 全局共享视图内 a/u/r 作用于全局;推荐库视图内 c 循环切换分类过滤、
                          #   k 循环切换类型过滤——全部/仅 skills/仅 MCP,与分类过滤叠加,skills 与 MCP 分流;
+                         #   推荐库视图内 / 联网搜 GitHub(直搜)、i AI 提炼关键词再搜,结果代替目录
+                         #   列表展示,x 清除(Esc 有结果先清结果);
                          #   i AI 推荐:readline 临时退出 raw 模式读一行需求,结果视图含本地库+GitHub 联网两段,
                          #   任一路有结果即进 ai 视图,a 全部并入光标项目;
                          #   d 环境自检视图(d 重跑);U 软件更新视图(进入即强制检查,U 重查;
@@ -249,7 +262,10 @@ public/                  # 原生单页应用(index.html / app.js / style.css),�
                          #   MCP 服务页每个 server 带「设置」按钮,弹窗编辑配置(名称锁定,POST /api/mcps 同名 upsert 保存);
                          #   「从库中添加技能」弹窗(项目/全局共享)添加后不关窗、该行按钮变「已添加」禁用态,
                          #   方便连续添加大量技能,点「关闭」/遮罩才退出(先本地入列再发请求,防连点互冲);
-                         #   收养弹窗支持选「全部 agent」(选中自动切用户级,按 agent 分组展示结果)
+                         #   收养弹窗支持选「全部 agent」(选中自动切用户级,按 agent 分组展示结果);
+                         #   推荐库搜索框旁「GitHub 搜索」「AI 搜索」按钮(GET /api/catalog/github),
+                         #   结果区块(state.catalogGithub)渲染在目录上方:命中关键词/★/已安装标记/
+                         #   「仓库 ↗」外链/安装按钮,离开视图清空
 scripts/                 # make-icon.mjs(生成图标)、build-cli.mjs(esbuild 打 CLI 单文件,注入 createRequire + __SSW_VERSION__)、
                          #   release.mjs(npm run release:干净工作区检查 → 全量测试 → 打 tag → push main+tag)
 tests/                   # vitest,每文件对应一个 core 模块 + platform(Windows 专项)+ server(API)+ cli(端到端)
@@ -278,7 +294,7 @@ electron-builder.yml     # 打包配置:Linux AppImage + Windows NSIS(中文安�
 - 测试文件在 `tests/*.test.ts`,每个 core 模块一个对应文件,外加:`platform.test.ts`(Windows 专项:symlink EPERM 降级 copy、git 不在 PATH 的可读报错、Windows 保留名拒绝)、`server.test.ts`(起真实 HTTP 服务验证校验逻辑与 CLI 对齐)、`cli.test.ts`(端到端,用 `child_process` 跑**编译产物** `dist/cli.js`,`beforeAll` 里先自动跑 `npm run build`;Windows 上改用 `npm.cmd` 且必须带 `shell: true`——Node ≥18.20/20.12 起无 shell 直接 spawn `.cmd` 会抛 EINVAL,只换名字绕不过)。
 - **隔离约定(必须遵守)**:测试在 `beforeEach` 里把 `process.env.SSW_HOME` 指向 `fs.mkdtemp` 临时目录,`afterEach` 里删除该环境变量并 `rm` 临时目录——绝不触碰真实 `~/.skills-switch`。涉及真实文件系统的测试保持串行(这也是 `pool: 'forks'` 的原因)。`global.test.ts` 额外用 `vi.spyOn(os, 'homedir')` 指到临时目录,绝不触碰真实 home。
 - 网络相关测试注入假 `fetch`(`recommendForProject(path, name, fetchImpl)` 的第三参、`aiRecommendSkills({ ..., fetchImpl })` 与 `testAiConnection(overrides, fetchImpl)`),不打真实 GitHub/模型 API。
-- 提交改动前跑 `npm test`,当前基线:**19 个文件 230 个用例全绿**。push/PR 由 `.github/workflows/ci.yml` 跑三平台 × Node 18/20/22。
+- 提交改动前跑 `npm test`,当前基线:**19 个文件 239 个用例全绿**。push/PR 由 `.github/workflows/ci.yml` 跑三平台 × Node 18/20/22。
 
 ## 安全注意事项
 

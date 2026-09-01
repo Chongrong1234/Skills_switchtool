@@ -12,7 +12,9 @@ import {
   listCatalog,
   listCatalogCategories,
   listCatalogWithInstalled,
+  searchCatalogGithub,
 } from '../src/core/catalog.js';
+import { updateAiConfig } from '../src/core/ai.js';
 import { installFromGithub, LibraryError, registerSkillsIn } from '../src/core/library.js';
 import { upsertMcp } from '../src/core/mcps.js';
 import { upsertSkill } from '../src/core/registry.js';
@@ -218,5 +220,129 @@ describe('registerSkillsIn:合集仓库 subdir 扫描(推荐库安装链路)', (
   it('installFromGithub 对非法 subdir 在 clone 前就拒绝(无网络也安全)', async () => {
     await expect(installFromGithub('owner/repo', '../etc')).rejects.toThrow('非法子目录');
     await expect(installFromGithub('owner/repo', 'a//b')).rejects.toThrow('非法子目录');
+  });
+});
+
+// ---------- 推荐库联网搜索(searchCatalogGithub):网络层一律注入假 fetch,不访问真实 GitHub/模型 API ----------
+
+/** 造一条 GitHub Search API 风格的仓库记录 */
+function ghRepo(fullName: string, stars: number, description = `${fullName} 描述`): Record<string, unknown> {
+  return {
+    full_name: fullName,
+    name: fullName.split('/')[1],
+    html_url: `https://github.com/${fullName}`,
+    stargazers_count: stars,
+    description,
+  };
+}
+
+/** 假 fetch:api.github.com 按查询词分发 byKeyword 里的仓库;chat/completions 返回 opts.chat;failGithub 时搜索全挂 */
+function mockCatalogFetch(opts: { chat?: string; failGithub?: boolean; byKeyword?: Record<string, unknown[]>; ghQueries?: string[] }): typeof fetch {
+  return (async (url: unknown) => {
+    const u = String(url);
+    if (u.includes('api.github.com')) {
+      if (opts.ghQueries) opts.ghQueries.push(decodeURIComponent(u));
+      if (opts.failGithub) return { ok: false, status: 503, json: async () => ({}), text: async () => '' };
+      const q = decodeURIComponent(u.split('q=')[1]?.split('&')[0] ?? '');
+      const kw = Object.keys(opts.byKeyword ?? {}).find((k) => q.includes(k));
+      return { ok: true, status: 200, json: async () => ({ items: (kw && opts.byKeyword?.[kw]) ?? [] }), text: async () => '' };
+    }
+    if (u.includes('chat/completions')) {
+      return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: opts.chat ?? '{}' } }] }), text: async () => '' };
+    }
+    throw new Error(`unexpected url: ${u}`);
+  }) as unknown as typeof fetch;
+}
+
+describe('searchCatalogGithub 联网搜索', () => {
+  it('直连搜索:需求英文词兜底、star 降序、跨关键词去重、字段映射', async () => {
+    const r = await searchCatalogGithub('react dashboard', {
+      fetchImpl: mockCatalogFetch({
+        byKeyword: {
+          react: [ghRepo('b/react-skills', 50), ghRepo('a/shared', 10)],
+          dashboard: [ghRepo('a/shared', 10), ghRepo('c/dash', 100)],
+        },
+      }),
+    });
+    expect(r.ai).toBe(false);
+    expect(r.keywords).toEqual(['react', 'dashboard']);
+    // star 降序 + 同名仓库跨关键词只出现一次
+    expect(r.items.map((i) => i.repo)).toEqual(['c/dash', 'b/react-skills', 'a/shared']);
+    expect(r.items.every((i) => !i.installed && i.installedCount === 0)).toBe(true);
+    const shared = r.items[2];
+    expect(shared.keyword).toBe('react'); // 记首个命中的关键词
+    expect(shared.url).toBe('https://github.com/a/shared'); // 结果带仓库链接
+  });
+
+  it('已入库仓库标记 installed/installedCount,不排除', async () => {
+    await upsertSkill({
+      id: 'b/react-skills:x',
+      name: 'x',
+      description: 'd',
+      source: { type: 'github', uri: 'https://github.com/b/react-skills' },
+      tags: [],
+      installedAt: new Date().toISOString(),
+    });
+    const r = await searchCatalogGithub('react', { fetchImpl: mockCatalogFetch({ byKeyword: { react: [ghRepo('b/react-skills', 5)] } }) });
+    expect(r.items).toHaveLength(1);
+    expect(r.items[0].installed).toBe(true);
+    expect(r.items[0].installedCount).toBe(1);
+  });
+
+  it('ai 模式:模型提炼的关键词被采用(ai=true),GitHub 按这些词搜', async () => {
+    await updateAiConfig({ baseUrl: 'https://relay.example.com/v1', model: 'm1', apiKey: 'sk-x' });
+    const ghQueries: string[] = [];
+    const r = await searchCatalogGithub('做个 PDF 处理工具', {
+      ai: true,
+      fetchImpl: mockCatalogFetch({ chat: '{"githubKeywords":["pdf"]}', ghQueries, byKeyword: { pdf: [ghRepo('p/pdf-tools', 9)] } }),
+    });
+    expect(r.ai).toBe(true);
+    expect(r.keywords).toEqual(['pdf']);
+    expect(r.model).toBe('m1');
+    expect(ghQueries).toHaveLength(1);
+    expect(ghQueries[0]).toContain('topic:agent-skills pdf');
+    expect(r.items.map((i) => i.repo)).toEqual(['p/pdf-tools']);
+  });
+
+  it('ai 模式未配置 key:降级为兜底词直连(ai=false + message),搜索仍执行', async () => {
+    const r = await searchCatalogGithub('react admin', {
+      ai: true,
+      fetchImpl: mockCatalogFetch({ byKeyword: { react: [ghRepo('b/react-skills', 5)] } }),
+    });
+    expect(r.ai).toBe(false);
+    expect(r.message).toContain('未配置 AI');
+    expect(r.keywords).toEqual(['react', 'admin']);
+    expect(r.items.map((i) => i.repo)).toEqual(['b/react-skills']);
+  });
+
+  it('ai 模式模型调用失败:提炼降级,GitHub 搜索仍按兜底词返回结果', async () => {
+    await updateAiConfig({ baseUrl: 'https://relay.example.com/v1', model: 'm1', apiKey: 'sk-x' });
+    const fetchImpl = (async (url: unknown) => {
+      const u = String(url);
+      if (u.includes('chat/completions')) throw new Error('模型超时');
+      if (u.includes('api.github.com')) {
+        return { ok: true, status: 200, json: async () => ({ items: [ghRepo('r/x', 1)] }), text: async () => '' };
+      }
+      throw new Error(`unexpected url: ${u}`);
+    }) as unknown as typeof fetch;
+    const r = await searchCatalogGithub('react 后台', { ai: true, fetchImpl });
+    expect(r.ai).toBe(false);
+    expect(r.message).toContain('AI 提炼关键词失败');
+    expect(r.keywords).toEqual(['react']);
+    expect(r.items.map((i) => i.repo)).toEqual(['r/x']);
+  });
+
+  it('GitHub 挂了:降级为空 + message,不抛异常', async () => {
+    const r = await searchCatalogGithub('react', { fetchImpl: mockCatalogFetch({ failGithub: true }) });
+    expect(r.items).toEqual([]);
+    expect(r.message).toContain('GitHub 搜索不可用');
+  });
+
+  it('空查询:直接提示,不发任何请求', async () => {
+    let called = 0;
+    const r = await searchCatalogGithub('  ', { fetchImpl: (async () => { called++; throw new Error('x'); }) as unknown as typeof fetch });
+    expect(r.items).toEqual([]);
+    expect(r.message).toContain('请输入');
+    expect(called).toBe(0);
   });
 });

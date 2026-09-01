@@ -10,6 +10,8 @@
  * 与 recommend.ts 同一约定:任何网络/解析失败都降级为空数组 + message,绝不抛异常
  * (配置校验错误除外——那是用户输入问题,抛 AiError 由上层映射 400)。
  * 本地推荐与联网推荐成败互相隔离:模型挂了仍有 GitHub 结果,GitHub 挂了不影响本地结果。
+ * aiExtractGithubKeywords:只让模型把自然语言需求提炼成 GitHub 搜索英文关键词
+ * (推荐库「AI 搜索」用,不读技能库;未配置/失败降级空 keywords 由调用方兜底)。
  */
 import { aiFile } from './paths.js';
 import { searchGithubSkillsCached } from './recommend.js';
@@ -153,6 +155,43 @@ export async function testAiConnection(
     return { ok: true, message: `连接成功(${cfg.model})` };
   } catch (err) {
     return { ok: false, message: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * AI 提炼 GitHub 搜索关键词:推荐库「AI 搜索」用——用户写自然语言需求,
+ * 模型只负责给出 1~3 个英文搜索词(parseAiGithubKeywords 清洗),不读技能库、不做推荐。
+ * 未配置 API Key / 网络失败 / 解析失败一律降级 { keywords: [], message },不抛异常;
+ * 调用方拿空 keywords 时应自行降级(fallbackGithubKeywords / 原文直搜)。
+ */
+export async function aiExtractGithubKeywords(
+  requirement: string,
+  fetchImpl: FetchLike = fetch,
+): Promise<{ keywords: string[]; model?: string; message?: string }> {
+  const req = requirement.trim();
+  if (!req) return { keywords: [], message: '请先描述需求' };
+  const cfg = await readAiConfig();
+  if (!cfg.apiKey) {
+    return { keywords: [], message: '未配置 AI:请在设置(或 ssw ai config)中填 API Key,可换 baseUrl 接中转站' };
+  }
+  try {
+    const messages: ChatMessage[] = [
+      {
+        role: 'system',
+        content:
+          '你是搜索关键词提炼助手。根据用户的开发需求,给出用于在 GitHub 搜索 agent skills 仓库的英文关键词。' +
+          '只输出 JSON:{"githubKeywords":["<英文搜索词>"]},不要输出任何其他内容。' +
+          '给 1~3 个简短英文词(如 react、code-review、docker),将用于 topic:agent-skills 的 GitHub 仓库搜索。',
+      },
+      { role: 'user', content: `开发需求:${req}` },
+    ];
+    const content = await chatCompletions(cfg, messages, 256, fetchImpl);
+    const keywords = parseAiGithubKeywords(content);
+    return keywords.length
+      ? { keywords, model: cfg.model }
+      : { keywords: [], model: cfg.model, message: 'AI 没有给出可用的搜索关键词,已降级为需求原文搜索' };
+  } catch (err) {
+    return { keywords: [], model: cfg.model, message: `AI 提炼关键词失败(已降级为直接搜索): ${err instanceof Error ? err.message : String(err)}` };
   }
 }
 

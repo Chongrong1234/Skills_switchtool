@@ -6,7 +6,8 @@
  * x 删除项目档案(y 二次确认;只删档案不动磁盘文件,同 CLI project remove);
  * a apply / u unapply / r 回滚 / i AI 推荐 / s 技能库 / m MCP 库 / g 全局共享 / c 推荐库 / d 环境自检 / U 软件更新 / q 或 Ctrl-C 退出,Esc 返回项目视图。
  * 全局共享视图里 a/u/r 作用于全局(用户级)物化;推荐库视图内 c 循环切换分类过滤、k 循环切换类型过滤(全部 → 仅 skills → 仅 MCP,
- * skills 与 MCP 的浏览/下载分流);
+ * skills 与 MCP 的浏览/下载分流),/ 联网搜 GitHub(关键词或需求直搜)、i 让已配置的 AI 提炼英文关键词再搜,
+ * 结果代替目录列表展示(x 清除回目录;Esc 有结果先清结果,再按才回项目视图);
  * AI 推荐视图(i 键输入开发需求后进入)内 a 把推荐全部并入光标项目;推荐含本地技能库与 GitHub 联网两路
  * (联网部分只读,安装走 CLI ssw skill add --github);技能库/MCP 库/推荐库为只读视图(增删改走 CLI 子命令)。
  */
@@ -15,7 +16,7 @@ import readline from 'node:readline';
 import { adapters, getAdapter } from './adapters/index.js';
 import { aiRecommendSkills, type AiGithubRecommendation, type AiRecommendedSkill } from './core/ai.js';
 import { applyProject, unapplyProject } from './core/apply.js';
-import { CATALOG_CATEGORIES, listCatalogWithInstalled, type CatalogEntryWithInstalled } from './core/catalog.js';
+import { CATALOG_CATEGORIES, listCatalogWithInstalled, searchCatalogGithub, type CatalogEntryWithInstalled, type CatalogGithubSearchResult } from './core/catalog.js';
 import {
   applyGlobal,
   readGlobal,
@@ -56,6 +57,8 @@ interface State {
   catalogCategory: string;
   /** 推荐库类型过滤('' = 全部);推荐库视图内按 k 循环切换(skills 与 MCP 分流) */
   catalogKind: '' | 'skill' | 'mcp';
+  /** 推荐库联网搜索结果(/ 直连搜、i AI 提炼关键词搜;x 清除回目录列表;reload 不刷新它) */
+  catalogGithub: { query: string; ai: boolean; result: CatalogGithubSearchResult } | null;
   /** 环境自检结果(null = 尚未运行;d 键触发) */
   doctor: DoctorReport | null;
   /** AI 推荐结果(i 键触发;绑定作用的目标项目随结果一起存) */
@@ -90,6 +93,7 @@ export async function startTui(): Promise<void> {
     catalog: [],
     catalogCategory: '',
     catalogKind: '',
+    catalogGithub: null,
     doctor: null,
     aiRec: null,
     updateCheck: null,
@@ -181,22 +185,42 @@ export async function startTui(): Promise<void> {
       lines.push('');
       lines.push(`${DIM}a apply  u unapply  r 回滚  Esc 返回项目视图  q 退出${RESET}`);
     } else if (state.view === 'catalog') {
-      const catName = (id: string) => CATALOG_CATEGORIES.find((c) => c.id === id)?.name ?? id;
-      // 类型与分类两个维度可叠加:先按 kind 分流(skills/MCP),再按分类过滤
-      const filtered = state.catalog
-        .filter((e) => !state.catalogKind || (e.kind ?? 'skill') === state.catalogKind)
-        .filter((e) => !state.catalogCategory || e.category === state.catalogCategory);
-      const catLabel = state.catalogCategory ? catName(state.catalogCategory) : '全部';
-      const kindLabel = state.catalogKind === 'skill' ? '仅 skills' : state.catalogKind === 'mcp' ? '仅 MCP' : '全部';
-      lines.push(`推荐库(${filtered.length}/${state.catalog.length})  类型: ${kindLabel}  分类: ${catLabel}  ${DIM}安装: ssw catalog install <id>${RESET}`);
-      lines.push('');
-      for (const e of filtered.slice(0, rows - 8)) {
-        const mark = e.installed ? '✓' : ' ';
-        const star = e.stars > 0 ? ` ★${e.stars}` : '';
-        lines.push(` ${mark} ${cut(e.id, 42).padEnd(42)} [${catName(e.category)}]${star}  ${cut(e.name, 18)}`);
+      const gh = state.catalogGithub;
+      if (gh) {
+        // 联网搜索结果视图(代替目录列表):/ 直连搜、i AI 提炼关键词搜;x 清除回目录
+        const r = gh.result;
+        const kwTxt = r.keywords.length ? r.keywords.join(', ') : '-';
+        lines.push(
+          `GitHub 搜索「${cut(gh.query, 28)}」(${r.items.length} 个)` +
+          (gh.ai ? `  AI 关键词: ${kwTxt}${r.model ? ` · ${r.model}` : ''}` : `  关键词: ${kwTxt}`),
+        );
+        lines.push('');
+        if (r.message) lines.push(`${DIM}(${cut(r.message, cols - 4)})${RESET}`);
+        for (const g of r.items.slice(0, rows - 9)) {
+          const mark = g.installed ? '✓' : ' ';
+          lines.push(` ${mark} ★${String(g.stars).padEnd(7)} ${cut(g.repo, 42).padEnd(42)} ${DIM}${cut(g.description, cols - 58)}${RESET}`);
+        }
+        if (!r.items.length && !r.message) lines.push('(无结果,换个关键词或需求再试)');
+        lines.push('');
+        lines.push(`${DIM}安装: ssw catalog install <owner/repo>  / 再搜  i AI 搜索  x 清除结果  Esc 返回  q 退出${RESET}`);
+      } else {
+        const catName = (id: string) => CATALOG_CATEGORIES.find((c) => c.id === id)?.name ?? id;
+        // 类型与分类两个维度可叠加:先按 kind 分流(skills/MCP),再按分类过滤
+        const filtered = state.catalog
+          .filter((e) => !state.catalogKind || (e.kind ?? 'skill') === state.catalogKind)
+          .filter((e) => !state.catalogCategory || e.category === state.catalogCategory);
+        const catLabel = state.catalogCategory ? catName(state.catalogCategory) : '全部';
+        const kindLabel = state.catalogKind === 'skill' ? '仅 skills' : state.catalogKind === 'mcp' ? '仅 MCP' : '全部';
+        lines.push(`推荐库(${filtered.length}/${state.catalog.length})  类型: ${kindLabel}  分类: ${catLabel}  ${DIM}安装: ssw catalog install <id>${RESET}`);
+        lines.push('');
+        for (const e of filtered.slice(0, rows - 8)) {
+          const mark = e.installed ? '✓' : ' ';
+          const star = e.stars > 0 ? ` ★${e.stars}` : '';
+          lines.push(` ${mark} ${cut(e.id, 42).padEnd(42)} [${catName(e.category)}]${star}  ${cut(e.name, 18)}`);
+        }
+        lines.push('');
+        lines.push(`${DIM}c 切换分类  k 切换类型  / GitHub 搜索  i AI 搜索  Esc 返回项目视图  q 退出${RESET}`);
       }
-      lines.push('');
-      lines.push(`${DIM}c 切换分类  k 切换类型  Esc 返回项目视图  q 退出${RESET}`);
     } else if (state.view === 'doctor') {
       lines.push('环境自检:');
       lines.push('');
@@ -319,7 +343,14 @@ export async function startTui(): Promise<void> {
       }
       if (state.busy) return;
       if (key === '\u001b') {
-        // Esc:返回项目视图(方向键是 ESC 开头的多字节序列,不会被这条命中——它们不止 1 字节)
+        // Esc:推荐库有联网搜索结果时先清结果回目录列表,再按一次才返回项目视图;
+        // 方向键是 ESC 开头的多字节序列,不会被这条命中——它们不止 1 字节
+        if (state.view === 'catalog' && state.catalogGithub) {
+          state.catalogGithub = null;
+          state.message = '';
+          render();
+          return;
+        }
         if (state.view !== 'projects') {
           state.view = 'projects';
           state.message = '';
@@ -366,6 +397,32 @@ export async function startTui(): Promise<void> {
           const kinds = ['', 'skill', 'mcp'] as const;
           const idx = kinds.indexOf(state.catalogKind);
           state.catalogKind = kinds[(idx + 1) % kinds.length];
+          render();
+        }
+        // / 联网搜索 GitHub(直连,关键词或需求整句);i 先 AI 提炼英文关键词再搜(未配置 AI 自动降级直连)
+        if (key === '/' || key === 'i') {
+          const ai = key === 'i';
+          void (async () => {
+            const q = (await ask(ai ? '描述需求,AI 提炼关键词搜 GitHub> ' : 'GitHub 搜索(关键词或需求描述)> ')).trim();
+            if (!q) {
+              render();
+              return;
+            }
+            await run(async () => {
+              const result = await searchCatalogGithub(q, { ai });
+              state.catalogGithub = { query: q, ai, result };
+              if (result.items.length) {
+                const head = result.ai ? `,AI 关键词: ${result.keywords.join(', ')}` : '';
+                return `✓ GitHub 搜索到 ${result.items.length} 个仓库(关键词: ${result.keywords.join(', ') || '-'}${head})`;
+              }
+              return `GitHub 搜索: ${result.message ?? '无结果'}`;
+            });
+          })();
+        }
+        // x 清除联网搜索结果,回目录列表
+        if (key === 'x' && state.catalogGithub) {
+          state.catalogGithub = null;
+          state.message = '';
           render();
         }
         return;

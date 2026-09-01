@@ -3,6 +3,18 @@
 本项目遵循语义化版本;版本号单一来源是 `package.json`。
 发布走 `npm run release`(干净工作区检查 → 全量测试 → 打 tag → 推送,tag 触发三平台 Release 构建)。
 
+## v1.6.0(2026-09-01)
+
+推荐库接入 GitHub 联网搜索:
+
+- **core `searchCatalogGithub`**(`src/core/catalog.ts`):推荐库不再只是离线静态数据——按 `topic:agent-skills <关键词>` 联网搜 GitHub 仓库(复用 recommend 的 24h 缓存),多词合并去重、star 降序、上限 12;已入库的只标「已安装」不排除;断网/限流降级空结果 + message,绝不抛异常
+- **AI 提炼关键词**(`src/core/ai.ts` 新增 `aiExtractGithubKeywords`):输入自然语言需求,已配置的模型先提炼英文搜索词再搜;未配置 key/模型失败降级用需求里的英文词兜底,再不行整句直搜——AI 是加分项不是必需品
+- **结果带 GitHub 链接**:每条命中带仓库地址,GUI「仓库 ↗」外链直达,CLI/TUI 输出链接与 `ssw skill add --github` 安装指引
+- **REST**:`GET /api/catalog/github?q=<>&ai=1`(q 空 400;降级返回 200 + message)
+- **CLI**:`ssw catalog --q <词> --github` 直搜,`--ai` 先 AI 提炼关键词(蕴含 --github);`--json` 输出带 github 字段
+- **TUI**:推荐库视图内 `/` 直搜、`i` AI 提炼关键词再搜,结果代替目录列表展示,`x` 清除(Esc 有结果先清结果)
+- **桌面 GUI**:推荐库搜索框旁「GitHub 搜索」「AI 搜索」按钮,结果卡片带命中关键词/★/已安装标记/仓库外链/一键安装(自动探测合集子目录)
+
 ## v1.5.0(2026-09-01)
 
 自动更新系统:对照 GitHub Releases 检查新版本,用户可手动下载安装包或配置自动更新——

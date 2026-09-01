@@ -41,7 +41,7 @@ import {
   toPublicConfig,
   updateAiConfig,
 } from './core/ai.js';
-import { CATALOG, listCatalogCategories, listCatalogWithInstalled } from './core/catalog.js';
+import { CATALOG, listCatalogCategories, listCatalogWithInstalled, searchCatalogGithub } from './core/catalog.js';
 import { exportSkillsCode, importSkillsCode, parseSkillsCode } from './core/migrate.js';
 import { rollback } from './core/snapshot.js';
 import { runDoctor } from './core/doctor.js';
@@ -674,16 +674,22 @@ const catalogCmd = leaf(
     .description('推荐库:内置精选高 star skills 与常用 MCP server 目录,按 star 降序')
     .option('--category <id>', '只看某个分类(id 见 ssw catalog categories)')
     .option('--kind <kind>', '只看某类条目: skill|mcp(skills 与 MCP 分流浏览/安装)')
-    .option('--q <keyword>', '关键词过滤(名称/描述/仓库)'),
+    .option('--q <keyword>', '关键词过滤(名称/描述/仓库);配合 --github/--ai 即联网搜索')
+    .option('--github', '联网搜索 GitHub 的 agent-skills 仓库(配合 --q;结果带仓库链接)')
+    .option('--ai', '先用已配置的 AI 把 --q 的需求提炼成英文关键词再联网搜索(蕴含 --github)'),
 ).action(
-  wrap(async (cmd, opts: { category?: string; kind?: string; q?: string }) => {
+  wrap(async (cmd, opts: { category?: string; kind?: string; q?: string; github?: boolean; ai?: boolean }) => {
     if (opts.kind && opts.kind !== 'skill' && opts.kind !== 'mcp') {
       throw new Error('--kind 只能是 skill 或 mcp');
     }
+    const wantGithub = !!(opts.github || opts.ai);
+    if (wantGithub && !opts.q?.trim()) throw new Error('--github/--ai 需配合 --q(搜索词或需求描述)');
     const kind = opts.kind as 'skill' | 'mcp' | undefined;
     const items = await listCatalogWithInstalled({ category: opts.category, kind, query: opts.q });
     const cats = listCatalogCategories();
-    out(cmd, { categories: cats, items }, () => {
+    // 联网搜索与本地过滤互不阻塞:本地结果照常列出,GitHub 结果追加在后(降级只影响本段)
+    const github = wantGithub ? await searchCatalogGithub(opts.q!.trim(), { ai: !!opts.ai }) : null;
+    out(cmd, { categories: cats, items, ...(github ? { github } : {}) }, () => {
       const catName = (id: string) => cats.find((c) => c.id === id)?.name ?? id;
       const lines: string[] = [];
       for (const e of items) {
@@ -694,8 +700,26 @@ const catalogCmd = leaf(
         lines.push(`${starTxt}  ${e.name}  ${kindTag}[${catName(e.category)}]  ${e.id}${stateTxt}`);
         lines.push(`          ${e.description}`);
       }
-      if (!items.length) lines.push('(无匹配条目)');
-      lines.push(`共 ${items.length} 条;分类清单: ssw catalog categories;只看一类: --kind skill|mcp;安装: ssw catalog install <owner/repo|MCP名>`);
+      if (!items.length) lines.push('(本地推荐库无匹配条目)');
+      if (github) {
+        lines.push('');
+        const kwTxt = github.keywords.length ? github.keywords.join(', ') : '-';
+        lines.push(
+          github.ai
+            ? `GitHub 联网搜索(AI 提炼关键词: ${kwTxt}${github.model ? ` · ${github.model}` : ''}):`
+            : `GitHub 联网搜索(关键词: ${kwTxt}):`,
+        );
+        if (github.message) lines.push(`  (${github.message})`);
+        for (const g of github.items) {
+          lines.push(`  ★ ${String(g.stars).padStart(6)}  ${g.repo}${g.installed ? `  (已安装 ${g.installedCount})` : ''}`);
+          if (g.description) lines.push(`            ${g.description}`);
+          lines.push(`            ${g.url}`);
+        }
+        lines.push('安装: ssw catalog install <owner/repo>(或 ssw skill add --github <owner/repo>)');
+      } else {
+        lines.push(`共 ${items.length} 条;分类清单: ssw catalog categories;只看一类: --kind skill|mcp;安装: ssw catalog install <owner/repo|MCP名>`);
+        lines.push('没找到?联网搜索: ssw catalog --q <搜索词或需求> --github(或 --ai 让 AI 提炼关键词)');
+      }
       return lines.join('\n');
     });
   }),
