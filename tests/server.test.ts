@@ -385,10 +385,27 @@ describe('软件更新端点(GitHub API 走假 fetch,其余请求代理回真实
     tag_name: 'v99.0.0',
     html_url: 'https://github.com/Chongrong1234/Skills_switchtool/releases/tag/v99.0.0',
     published_at: '2026-09-01T00:00:00Z',
+    // 资产覆盖三平台且名字共享 'Skills.SwitchTool-99.0.0' 前缀:pickAsset 按运行平台挑,
+    // 只放 AppImage 时 mac/win 挑不到资产,download 会 400 而不是 202
     assets: [
       {
         name: 'Skills.SwitchTool-99.0.0.AppImage',
         browser_download_url: 'https://fake.test/dl.AppImage',
+        size: 9,
+      },
+      {
+        name: 'Skills.SwitchTool-99.0.0.Setup.exe',
+        browser_download_url: 'https://fake.test/dl.exe',
+        size: 9,
+      },
+      {
+        name: 'Skills.SwitchTool-99.0.0-arm64.dmg',
+        browser_download_url: 'https://fake.test/dl-arm64.dmg',
+        size: 9,
+      },
+      {
+        name: 'Skills.SwitchTool-99.0.0.dmg',
+        browser_download_url: 'https://fake.test/dl-x64.dmg',
         size: 9,
       },
     ],
@@ -447,15 +464,13 @@ describe('软件更新端点(GitHub API 走假 fetch,其余请求代理回真实
       expect((await api('PUT', '/api/update/config', { autoCheck: 'yes' })).status).toBe(400);
       expect((await api('PUT', '/api/update/config', { skillsCheckIntervalHours: '6' })).status).toBe(400);
 
-      // 手动检查(强制):发现新版本,linux 下挑到 AppImage
+      // 手动检查(强制):发现新版本;三平台都要能挑到资产(夹具资产覆盖全平台)
       const chk = await api('POST', '/api/update/check', {});
       expect(chk.status).toBe(200);
       expect(chk.data.ok).toBe(true);
       expect(chk.data.hasUpdate).toBe(true);
       expect(chk.data.latest).toBe('99.0.0');
-      if (process.platform === 'linux') {
-        expect(chk.data.asset?.name).toBe('Skills.SwitchTool-99.0.0.AppImage');
-      }
+      expect(chk.data.asset?.name).toContain('Skills.SwitchTool-99.0.0');
 
       // status 现在带最近检查结果
       const st1 = await api('GET', '/api/update/status');
@@ -478,7 +493,8 @@ describe('软件更新端点(GitHub API 走假 fetch,其余请求代理回真实
       }
       expect(job?.done).toBe(true);
       expect(job?.error).toBeUndefined();
-      expect(job?.file).toContain('Skills.SwitchTool-99.0.0.AppImage');
+      // 挑中的资产名随平台不同(AppImage/Setup.exe/dmg),共同前缀是 Skills.SwitchTool-99.0.0
+      expect(job?.file).toContain('Skills.SwitchTool-99.0.0');
       expect(await fs.readFile(job!.file!, 'utf8')).toBe('hello-app');
 
       // 同一文件已完整下载过 → 幂等 already,不重复拉

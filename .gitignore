@@ -3,3 +3,6 @@ dist/
 release/
 *.log
 .DS_Store
+
+# 仓库根误放的 AppImage 下载残留(真正产物在 release/)
+/Skills.SwitchTool*.AppImage

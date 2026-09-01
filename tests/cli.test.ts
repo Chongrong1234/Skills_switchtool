@@ -507,9 +507,26 @@ describe('ssw CLI', () => {
           html_url: 'https://github.com/Chongrong1234/Skills_switchtool/releases/tag/v99.0.0',
           published_at: '2026-09-01T00:00:00Z',
           assets: [
+            // 资产覆盖三平台:checkForUpdate 按运行平台挑资产,只有 AppImage 时 mac/win 挑不到,
+            // CLI 就不打印 --download 引导(CI 三平台都跑)
             {
               name: 'Skills.SwitchTool-99.0.0.AppImage',
               browser_download_url: 'https://fake.test/x.AppImage',
+              size: 1024,
+            },
+            {
+              name: 'Skills.SwitchTool-99.0.0.Setup.exe',
+              browser_download_url: 'https://fake.test/x.exe',
+              size: 1024,
+            },
+            {
+              name: 'Skills.SwitchTool-99.0.0-arm64.dmg',
+              browser_download_url: 'https://fake.test/arm64.dmg',
+              size: 1024,
+            },
+            {
+              name: 'Skills.SwitchTool-99.0.0.dmg',
+              browser_download_url: 'https://fake.test/x64.dmg',
               size: 1024,
             },
           ],

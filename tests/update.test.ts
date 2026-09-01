@@ -267,7 +267,9 @@ describe('autoUpdateOnStartup', () => {
     const content = Buffer.from('auto-dl');
     const fetchImpl = (async (input: unknown) => {
       const url = String(input);
-      if (url.includes('.AppImage')) {
+      // 资产下载地址都带 /releases/download/;按当前平台挑中的资产可能是 AppImage/dmg/exe,
+      // 不能只对 .AppImage 放行(macOS/Windows 上会把 release JSON 当成安装包内容)
+      if (url.includes('/releases/download/')) {
         return new Response(content, { headers: { 'content-length': String(content.length) } });
       }
       return new Response(JSON.stringify(fakeRelease()), { status: 200 });
