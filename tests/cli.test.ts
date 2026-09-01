@@ -620,7 +620,8 @@ describe('ssw CLI', () => {
     // 清理库外的 git fixture(afterEach 只清 sswHome/projectDir)
     await fs.rm(remoteDir, { recursive: true, force: true });
     await fs.rm(workDir, { recursive: true, force: true });
-  });
+    // Windows CI 上 node 起子进程 + 密集 git 调用很慢,默认 20s 偶发不够,放宽到 60s
+  }, 60000);
 
   it('update --skills-check on|off:写 update.json 的技能库定时检查开关', async () => {
     const off = await cli('update', '--skills-check', 'off');
