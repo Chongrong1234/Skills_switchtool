@@ -355,3 +355,54 @@ body {
 .skill-card .cbtns { display: flex; gap: 8px; margin-top: 4px; }
 .skill-card .cbtns a.btn { text-decoration: none; display: inline-block; }
 .skill-card .cbtns .btn[disabled] { opacity: 0.55; cursor: default; }
+
+/* ---------- 界面自适应(响应式断点;纯 CSS,不改 DOM 结构) ---------- */
+/* 宽屏:主区放宽,减少两侧留白浪费 */
+@media (min-width: 1500px) {
+  #main { max-width: 1200px; }
+}
+
+/* 中等窗口:收窄侧栏与主区内边距;视图按钮两行排布防文字挤压 */
+@media (max-width: 1100px) {
+  #sidebar { width: 220px; }
+  .views { flex-wrap: wrap; }
+  .view-btn { flex: 1 1 40%; }
+  #main { padding: 20px 22px; }
+}
+
+/* 窄窗口:侧栏变为顶部横条(项目卡横向滚动),主区占满全宽 */
+@media (max-width: 860px) {
+  #app { flex-direction: column; }
+  #sidebar {
+    width: 100%;
+    height: auto;
+    position: static;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+  .brand { padding: 0 4px; }
+  .views { flex: 1 1 auto; flex-wrap: nowrap; }
+  .view-btn { flex: 1 1 auto; padding: 6px 8px; }
+  .sidebar-list { flex: 1 1 100%; flex-direction: row; overflow-x: auto; overflow-y: hidden; }
+  .project-card { flex: 0 0 auto; width: 220px; }
+  .update-banner { flex: 1 1 100%; }
+  /* btn-block 的 width:100% 在横条里会撑满整行,id 选择器盖掉 */
+  #btn-new-project, #btn-settings { width: auto; }
+  #main { max-width: none; padding: 18px 16px; }
+}
+
+/* 超窄窗口:表单与工具栏纵向堆叠 */
+@media (max-width: 560px) {
+  .modal { padding: 16px; }
+  .main-title { font-size: 19px; }
+  .cat-toolbar { flex-wrap: wrap; }
+  .cat-toolbar input { flex: 1 1 100%; }
+  .ai-row { flex-wrap: wrap; }
+  .ai-row .ai-label { flex: 1 1 100%; }
+  .actions .btn, .modal-actions .btn { flex: 1 1 auto; }
+}

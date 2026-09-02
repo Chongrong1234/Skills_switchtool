@@ -267,10 +267,14 @@ src/
                          #   stdin raw 模式 + ANSI 整帧重绘
   version.ts             # 版本号单一来源:运行时读 ../package.json(src/ 与 dist/ 都恰在根下一层);
                          #   esbuild 打包单文件时 define 注入 __SSW_VERSION__
-electron/main.mjs        # Electron 主进程:动态 import dist/serve.js,127.0.0.1+端口 0,BrowserWindow 加载
+electron/main.mjs        # Electron 主进程:动态 import dist/serve.js,127.0.0.1+端口 0,BrowserWindow 加载;
+                         #   窗口最小 720×540(界面自适应的可用下限)
 public/                  # 原生单页应用(index.html / app.js / style.css),无构建步骤;深/浅双主题:
                          #   CSS 变量在 style.css 顶部,选择存 localStorage(ssw-theme),
                          #   index.html head 内联脚本在首屏前恢复主题;
+                         #   界面自适应纯 CSS 断点(style.css 末尾):≥1500px 主区放宽到 1200px;
+                         #   ≤1100px 侧栏收窄 220px、视图按钮两行;≤860px 侧栏变顶部横条
+                         #   (项目卡横向滚动、主区全宽);≤560px 表单/工具栏纵向堆叠;
                          #   新建项目弹窗与项目详情页均含「开发需求」AI 推荐区(可多次调用,结果存 state.aiBox
                          #   重绘后恢复;runAiRecommend+renderAiBox 共享渲染:本地推荐勾选绑定,
                          #   GitHub 联网推荐一键安装并绑定,已绑定/已入库禁用态);

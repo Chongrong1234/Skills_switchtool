@@ -35,6 +35,9 @@ async function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
+    // 自适应布局的下限:再窄顶部横条与卡片网格也难以排布
+    minWidth: 720,
+    minHeight: 540,
     backgroundColor: '#0f1115', // 与前端深色主题一致
     title: 'Skills SwitchTool',
     autoHideMenuBar: true,
