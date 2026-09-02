@@ -278,6 +278,44 @@ describe('server 校验(与 CLI 行为对齐)', () => {
     }
   });
 
+  it('GET /api/catalog/github?kind= 与 mcp-config:MCP 仓库搜索与 README 配置提取(假 fetch)', async () => {
+    // kind 非法 → 400;mcp-config 缺 repo / repo 格式非法(McpError)→ 400
+    expect((await api('GET', '/api/catalog/github?q=x&kind=nope')).status).toBe(400);
+    expect((await api('GET', '/api/catalog/github/mcp-config')).status).toBe(400);
+    expect((await api('GET', '/api/catalog/github/mcp-config?repo=not%20a%20repo')).status).toBe(400);
+
+    const realFetch = globalThis.fetch;
+    vi.stubGlobal('fetch', (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('api.github.com/search/repositories')) {
+        return new Response(JSON.stringify({ items: [
+          { full_name: 'matlab/matlab-mcp-server', name: 'matlab-mcp-server', html_url: 'https://github.com/matlab/matlab-mcp-server', stargazers_count: 1442, description: 'MATLAB MCP' },
+        ] }), { status: 200 });
+      }
+      if (url.includes('api.github.com/repos/') && url.endsWith('/readme')) {
+        const md = '```json\n' + JSON.stringify({ mcpServers: { matlab: { command: '/opt/matlab-mcp-server', args: [] } } }) + '\n```';
+        return new Response(JSON.stringify({ content: Buffer.from(md, 'utf8').toString('base64'), encoding: 'base64' }), { status: 200 });
+      }
+      return realFetch(input, init);
+    }) as typeof fetch);
+    try {
+      // kind=mcp:按 MCP topic 搜,条目与结果都带 kind=mcp
+      const r = await api('GET', '/api/catalog/github?q=matlab&kind=mcp');
+      expect(r.status).toBe(200);
+      expect(r.data.kind).toBe('mcp');
+      expect(r.data.items).toHaveLength(1);
+      expect(r.data.items[0].repo).toBe('matlab/matlab-mcp-server');
+      expect(r.data.items[0].kind).toBe('mcp');
+      // mcp-config:从 README 的 mcpServers 块提取启动配置
+      const cfg = await api('GET', '/api/catalog/github/mcp-config?repo=matlab/matlab-mcp-server');
+      expect(cfg.status).toBe(200);
+      expect(cfg.data.name).toBe('matlab-mcp-server');
+      expect(cfg.data.spec).toMatchObject({ transport: 'stdio', command: '/opt/matlab-mcp-server' });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('AI 端点:配置读写掩码不回原文;非法 baseUrl 400;recommend 校验与降级', async () => {
     // 初始:未配置 key,带预设清单,不含 apiKey 原文字段
     const init = await api('GET', '/api/ai/config');

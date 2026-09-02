@@ -4,7 +4,7 @@
 
 ## 项目概述
 
-**Skills SwitchTool**(`skills-switchtool`,v1.7.0):项目中心化的 Agent Skills 管理工具。交互模式仿照 cc-switch:**中央存储 + 切换 + 写入目标工具配置位置 + 快照可回滚**。
+**Skills SwitchTool**(`skills-switchtool`,v1.8.0):项目中心化的 Agent Skills 管理工具。交互模式仿照 cc-switch:**中央存储 + 切换 + 写入目标工具配置位置 + 快照可回滚**。
 
 核心概念:
 
@@ -151,11 +151,20 @@ src/
                          #   (count/skills/mcps)供 GUI 标签角标、CLI catalog categories、TUI 分类切换共用;
                          #   CatalogFilter.kind(catalogEntryKind 口径,缺省视为 skill)把 skills 与 MCP
                          #   的浏览/安装分流:REST ?kind=、CLI --kind、TUI k 键、GUI 类型标签页共用;
-                         #   searchCatalogGithub(q, {ai, fetchImpl}):联网搜 GitHub topic:agent-skills
-                         #   仓库(复用 recommend 24h 缓存,多词合并去重、star 降序、上限 12;
-                         #   已入库只标 installed 不排除;ai:true 先用 aiExtractGithubKeywords 提炼
+                         #   searchCatalogGithub(q, {ai, kind, fetchImpl}):联网搜 GitHub 仓库
+                         #   (复用 recommend 24h 缓存,多词合并去重、star 降序、上限 12);
+                         #   kind=skill 搜 topic:agent-skills,kind=mcp 搜 topic:mcp-server +
+                         #   topic:model-context-protocol 一词两查(MCP 仓库不带 agent-skills
+                         #   topic,旧口径搜不到 matlab-mcp-server 等);缺省自动判定——搜索词含
+                         #   独立单词 mcp 即按 mcp 搜;裸 mcp/server 关键词不参与检索防泛化淹没;
+                         #   installed 口径 skill 按注册表仓库前缀、mcp 按 suggestMcpName(仓库名)
+                         #   比对 mcps.json;ai:true 先用 aiExtractGithubKeywords 提炼
                          #   英文词,失败/未配置降级需求英文词兜底、再不行整句直搜;
-                         #   一切失败降级空+message 不抛)
+                         #   一切失败降级空+message 不抛;fetchGithubMcpConfig(repo):
+                         #   MCP 的「下载」落地——从 README 的 ```json 围栏块提取
+                         #   mcpServers/servers(VS Code 风格)启动配置(command/args/env 或
+                         #   url/serverUrl+headers,type=sse 识别),多 server 优先与仓库名相近者;
+                         #   repo 非法抛 McpError,网络/无配置块降级 spec:null+message 不抛
     doctor.ts            # 环境自检 runDoctor():数据目录可写/git 探活(spawn git --version,10s 超时)/
                          #   agent 检测(排除恒真的 'agents')/五个 JSON 数据文件健康度(缺失=首用 ok,
                          #   损坏=error 附修复 hint——运行时被 readJsonSafe 容错吞掉的损坏在这里暴露)+ 统计;
@@ -202,8 +211,10 @@ src/
                          #   /api/mcps CRUD + /api/projects/:id/mcps 绑定(校验名字在注册表存在);
                          #   /api/global GET/PUT + apply/unapply/rollback;/api/profile/export|import;
                          #   GET /api/catalog[?category=&q=&kind=skill|mcp]:推荐库,kind 把 skills 与 MCP 分流;
-                         #   GET /api/catalog/github?q=<>&ai=1:推荐库联网搜索(q 必填 400;ai=1 先 AI
-                         #   提炼关键词;降级 200 + message);
+                         #   GET /api/catalog/github?q=<>&ai=1[&kind=skill|mcp]:推荐库联网搜索(q 必填 400;
+                         #   ai=1 先 AI 提炼关键词;kind 缺省按搜索词含 mcp 与否自动判定;降级 200 + message);
+                         #   GET /api/catalog/github/mcp-config?repo=<>:从仓库 README 提取 MCP 启动配置
+                         #   (repo 必填;提取不到/断网 200 + spec:null + message;repo 非法 McpError 400);
                          #   GET /api/progress:git clone/pull + 更新下载任务进度(前端进度条轮询);
                          #   GET /api/skills?rank=1[&forProject=id] 热度排序(不带 rank 保持原顺序);
                          #   POST /api/skills/adopt 收养 agent 目录既有 skills;{ all: true } 一次
@@ -232,11 +243,14 @@ src/
                          #   project create 的 --agents 缺省取本机检测到的 agent(排除恒真 'agents',
                          #   零检测则报错引导);doctor 环境自检(error 级问题存在时退出码 1);
                          #   各安装/绑定命令成功输出带「下一步」引导;
-                         #   mcp list/add/remove(--command 与 --url 二选一,--env/--header 逗号分隔 KEY=V,--cwd 仅部分 agent 支持)
+                         #   mcp list/add/remove(--command 与 --url 二选一,--env/--header 逗号分隔 KEY=V,--cwd 仅部分 agent 支持;
+                         #   mcp add --github <owner/repo> 从仓库 README 提取启动配置一键添加,--name 可省按仓库名推导,
+                         #   提取不到报错并给手动指引)
                          #   + project bind-mcp;catalog install 按条目 kind 分流:skill 整仓安装,mcp 写注册表;
                          #   catalog 列表 --kind skill|mcp 把两类条目的浏览/安装分开(非法值报错);
                          #   catalog --q <词> --github 联网搜 GitHub(--ai 先提炼关键词,蕴含 --github;
-                         #   不带 --q 报错;输出带仓库链接与安装指引);
+                         #   --kind 与搜索词含 mcp 的自动判定决定搜 agent-skills 还是 MCP server 仓库;
+                         #   不带 --q 报错;输出带仓库链接,安装/添加指引按仓库类型分流);
                          #   catalog categories 分类清单(count/skills/mcps 统计,--category 的 id 来源);
                          #   skill init [--name --desc] [--content 文本|--file 路径](粘贴现成 SKILL.md 均可);
                          #   skill list 带 ★stars/用N次 热度标记;
@@ -256,8 +270,10 @@ src/
                          #   填了需求则 AI 推荐并整体绑定;x 删除项目档案:y 二次确认,只删档案不动磁盘文件;
                          #   g 全局共享视图内 a/u/r 作用于全局;推荐库视图内 c 循环切换分类过滤、
                          #   k 循环切换类型过滤——全部/仅 skills/仅 MCP,与分类过滤叠加,skills 与 MCP 分流;
-                         #   推荐库视图内 / 联网搜 GitHub(直搜)、i AI 提炼关键词再搜,结果代替目录
-                         #   列表展示,x 清除(Esc 有结果先清结果);
+                         #   推荐库视图内 / 联网搜 GitHub(直搜;k 键类型过滤为仅 MCP 时搜 MCP server 仓库,
+                         #   搜索词含 mcp 也自动判定)、i AI 提炼关键词再搜,结果代替目录
+                         #   列表展示(MCP 结果带 [MCP] 标记,底部指引按类型分流到 ssw mcp add --github),
+                         #   x 清除(Esc 有结果先清结果);
                          #   i AI 推荐:readline 临时退出 raw 模式读一行需求,结果视图含本地库+GitHub 联网两段,
                          #   任一路有结果即进 ai 视图,a 全部并入光标项目;
                          #   d 环境自检视图(d 重跑);U 软件更新视图(进入即强制检查,U 重查;
@@ -287,9 +303,12 @@ public/                  # 原生单页应用(index.html / app.js / style.css),�
                          #   「从库中添加技能」弹窗(项目/全局共享)添加后不关窗、该行按钮变「已添加」禁用态,
                          #   方便连续添加大量技能,点「关闭」/遮罩才退出(先本地入列再发请求,防连点互冲);
                          #   收养弹窗支持选「全部 agent」(选中自动切用户级,按 agent 分组展示结果);
-                         #   推荐库搜索框旁「GitHub 搜索」「AI 搜索」按钮(GET /api/catalog/github),
-                         #   结果区块(state.catalogGithub)渲染在目录上方:命中关键词/★/已安装标记/
-                         #   「仓库 ↗」外链/安装按钮,离开视图清空;
+                         #   推荐库搜索框旁「GitHub 搜索」「AI 搜索」按钮(GET /api/catalog/github,
+                         #   类型标签页为仅 MCP 时按 MCP server 仓库搜),结果区块(state.catalogGithub)
+                         #   渲染在目录上方:命中关键词/★/已安装标记/「仓库 ↗」外链;skill 卡片「安装」整仓克隆,
+                         #   MCP 卡片「添加」先走 /api/catalog/github/mcp-config 读 README 配置、
+                         #   开 MCP 弹窗预填(openMcpServerModal 第二参 prefill,含 _hint/_onSaved),
+                         #   保存后卡片原地转「已添加」,离开视图清空;
                          #   技能库页工具栏「检查更新」「一键更新全部」按钮 + #sk-upd-bar 提示条
                          #   (进视图 GET /api/skills/updates 读内存态,检查 POST .../check,
                          #   更新 POST .../apply 后 loadAll 重绘,落后仓库数高亮)
@@ -321,7 +340,7 @@ electron-builder.yml     # 打包配置:Linux AppImage + Windows NSIS(中文安�
 - 测试文件在 `tests/*.test.ts`,每个 core 模块一个对应文件,外加:`platform.test.ts`(Windows 专项:symlink EPERM 降级 copy、git 不在 PATH 的可读报错、Windows 保留名拒绝)、`server.test.ts`(起真实 HTTP 服务验证校验逻辑与 CLI 对齐)、`cli.test.ts`(端到端,用 `child_process` 跑**编译产物** `dist/cli.js`,`beforeAll` 里先自动跑 `npm run build`;Windows 上改用 `npm.cmd` 且必须带 `shell: true`——Node ≥18.20/20.12 起无 shell 直接 spawn `.cmd` 会抛 EINVAL,只换名字绕不过)。
 - **隔离约定(必须遵守)**:测试在 `beforeEach` 里把 `process.env.SSW_HOME` 指向 `fs.mkdtemp` 临时目录,`afterEach` 里删除该环境变量并 `rm` 临时目录——绝不触碰真实 `~/.skills-switch`。涉及真实文件系统的测试保持串行(这也是 `pool: 'forks'` 的原因)。`global.test.ts` 额外用 `vi.spyOn(os, 'homedir')` 指到临时目录,绝不触碰真实 home。
 - 网络相关测试注入假 `fetch`(`recommendForProject(path, name, fetchImpl)` 的第三参、`aiRecommendSkills({ ..., fetchImpl })` 与 `testAiConnection(overrides, fetchImpl)`),不打真实 GitHub/模型 API。
-- 提交改动前跑 `npm test`,当前基线:**19 个文件 246 个用例全绿**。push/PR 由 `.github/workflows/ci.yml` 跑三平台 × Node 18/20/22。
+- 提交改动前跑 `npm test`,当前基线:**19 个文件 258 个用例全绿**。push/PR 由 `.github/workflows/ci.yml` 跑三平台 × Node 18/20/22。
 
 ## 安全注意事项
 

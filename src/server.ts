@@ -34,7 +34,7 @@ import {
   setProjectSkills,
   updateProject,
 } from './core/projects.js';
-import { listCatalogCategories, listCatalogWithInstalled, searchCatalogGithub } from './core/catalog.js';
+import { fetchGithubMcpConfig, listCatalogCategories, listCatalogWithInstalled, searchCatalogGithub } from './core/catalog.js';
 import { exportSkillsCode, importSkillsCode, parseSkillsCode } from './core/migrate.js';
 import { listMcps, McpError, removeMcp, upsertMcp } from './core/mcps.js';
 import { recommendForProject } from './core/recommend.js';
@@ -369,12 +369,25 @@ export function createApp(): express.Express {
     });
   }));
 
-  // 推荐库联网搜索:q 为搜索词或自然语言需求;ai=1 时先用已配置的 AI 提炼英文关键词再搜。
+  // 推荐库联网搜索:q 为搜索词或自然语言需求;ai=1 时先用已配置的 AI 提炼英文关键词再搜;
+  // kind=skill|mcp 显式指定搜哪类仓库(缺省自动判定:q 含独立单词 mcp 时按 MCP server 仓库搜)。
   // 结果带仓库链接与 installed 标记;降级(断网/未配置 AI)返回 200 + message,不抛错
   app.get('/api/catalog/github', h(async (req, res) => {
     const q = String(req.query.q ?? '').trim();
     if (!q) return void res.status(400).json({ error: 'q 必填(搜索词或需求描述)' });
-    res.json(await searchCatalogGithub(q, { ai: req.query.ai === '1' }));
+    const kind = req.query.kind ? String(req.query.kind) : undefined;
+    if (kind !== undefined && kind !== 'skill' && kind !== 'mcp') {
+      return void res.status(400).json({ error: 'kind 只能是 skill 或 mcp' });
+    }
+    res.json(await searchCatalogGithub(q, { ai: req.query.ai === '1', kind }));
+  }));
+
+  // MCP 仓库「下载」落地:从仓库 README 提取 mcpServers/servers 启动配置(GUI 添加弹窗预填 / CLI 用)。
+  // 提取不到/断网降级 200 + spec:null + message;repo 格式非法由 McpError 映射 400
+  app.get('/api/catalog/github/mcp-config', h(async (req, res) => {
+    const repo = String(req.query.repo ?? '').trim();
+    if (!repo) return void res.status(400).json({ error: 'repo 必填(owner/repo 或 GitHub URL)' });
+    res.json(await fetchGithubMcpConfig(repo));
   }));
 
   // ---- recommend ----

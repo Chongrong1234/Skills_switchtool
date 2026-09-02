@@ -1237,15 +1237,18 @@ function renderMcpLibrary() {
 }
 
 /** 添加/配置 MCP server:stdio(本地命令)与 http/sse(远端)字段按类型切换;
- *  传 existing 进入配置模式(名称是唯一键,锁定不可改),保存走 POST /api/mcps 同名 upsert */
-function openMcpServerModal(existing) {
+ *  传 existing 进入配置模式(名称是唯一键,锁定不可改),保存走 POST /api/mcps 同名 upsert;
+ *  prefill(推荐库 GitHub 搜索「添加 MCP」)按 README 提取结果预填:名称仍可改,
+ *  _repo 用于标题,_hint 为提取情况说明,_onSaved 在保存成功后回调(结果卡片转已添加) */
+function openMcpServerModal(existing, prefill) {
   const edit = !!existing;
-  const m = existing || {};
+  const m = existing || prefill || {};
   // KEY=V 逗号分隔 <-> 对象,与提交时的解析互逆(值里含 = 也能往返,提交按首个 = 切)
   const kvJoin = (obj) => Object.entries(obj || {}).map(([k, v]) => `${k}=${v}`).join(',');
   const isStdio = (m.transport || 'stdio') === 'stdio';
   const modal = openModal(`
-    <h2>${edit ? `配置 MCP server: ${esc(m.name)}` : '添加 MCP server'}</h2>
+    <h2>${edit ? `配置 MCP server: ${esc(m.name)}` : (prefill && prefill._repo ? `添加 MCP server(来自 ${esc(prefill._repo)})` : '添加 MCP server')}</h2>
+    ${!edit && prefill && prefill._hint ? `<div class="rdesc" style="margin-bottom:8px">${esc(prefill._hint)}</div>` : ''}
     <div class="form-row"><label>名称(字母/数字/下划线/连字符)</label>
       <input type="text" id="mcp-name" placeholder="filesystem" value="${esc(m.name || '')}" ${edit ? 'disabled' : ''} />
       ${edit ? '<div class="rdesc">名称是唯一键,不可修改;改动在下次 apply 时写入各 agent 配置</div>' : ''}</div>
@@ -1310,6 +1313,7 @@ function openMcpServerModal(existing) {
     await api('POST', '/api/mcps', body);
     await loadAll();
     closeModal();
+    if (!edit && prefill && typeof prefill._onSaved === 'function') prefill._onSaved(); // 推荐库结果卡片转「已添加」
     render();
     toast(edit ? `已保存 MCP server: ${name}` : `已添加 MCP server: ${name}`);
   }));
@@ -1330,7 +1334,9 @@ async function runCatalogGithubSearch(ai) {
   state.catalogGithub = { query: q, ai, loading: true, data: null };
   renderCatalog(); // 立即渲染 loading 态(输入框内容由 state.catalogQuery 恢复)
   try {
-    const data = await api('GET', `/api/catalog/github?q=${encodeURIComponent(q)}${ai ? '&ai=1' : ''}`);
+    // 类型过滤为「仅 MCP/仅 skills」时显式按该类仓库搜;「全部」时省略 kind,服务端按搜索词自动判定(含 mcp 词 → MCP)
+    const kindParam = state.catalogKind ? `&kind=${state.catalogKind}` : '';
+    const data = await api('GET', `/api/catalog/github?q=${encodeURIComponent(q)}${ai ? '&ai=1' : ''}${kindParam}`);
     state.catalogGithub = { query: q, ai, loading: false, data };
   } catch (err) {
     state.catalogGithub = { query: q, ai, loading: false, data: { items: [], keywords: [], ai: false, message: err.message } };
@@ -1351,7 +1357,14 @@ function catalogGithubHtml() {
   const kwTxt = d.ai
     ? `AI 提炼关键词: ${esc(d.keywords.join(', '))}${d.model ? `(${esc(d.model)})` : ''}`
     : (d.keywords.length ? `关键词: ${esc(d.keywords.join(', '))}` : '');
-  const cards = d.items.map((r) => `
+  const cards = d.items.map((r) => {
+    const isMcp = r.kind === 'mcp';
+    // 动作与状态标记按类型分流:skill 是整仓克隆(安装);MCP 是从 README 提取配置写注册表(添加)
+    const stateTag = r.installed ? (isMcp ? '<span class="tag">已添加</span>' : `<span class="tag">已安装 ${r.installedCount}</span>`) : '';
+    const btn = isMcp
+      ? `<button class="btn btn-sm btn-primary" data-gh-mcp="${esc(r.repo)}" ${r.installed ? 'disabled' : ''}>${r.installed ? '已添加' : '添加'}</button>`
+      : `<button class="btn btn-sm btn-primary" data-gh-install="${esc(r.repo)}" ${r.installed ? 'disabled' : ''}>${r.installed ? `已安装(${r.installedCount})` : '安装'}</button>`;
+    return `
     <div class="skill-card">
       <div class="chead">
         <span class="sname">${esc(r.repo)}</span>
@@ -1359,14 +1372,16 @@ function catalogGithubHtml() {
       </div>
       <div class="sdesc">${esc(r.description)}</div>
       <div class="smeta">
+        <span class="tag">${isMcp ? 'MCP' : 'skills'}</span>
         <span class="tag">命中: ${esc(r.keyword)}</span>
-        ${r.installed ? `<span class="tag">已安装 ${r.installedCount}</span>` : ''}
+        ${stateTag}
       </div>
       <div class="cbtns">
-        <button class="btn btn-sm btn-primary" data-gh-install="${esc(r.repo)}" ${r.installed ? 'disabled' : ''}>${r.installed ? `已安装(${r.installedCount})` : '安装'}</button>
+        ${btn}
         <a class="btn btn-sm" href="${esc(r.url)}" target="_blank" rel="noopener">仓库 ↗</a>
       </div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
   return `
     <div class="section" id="cat-gh">
       <h3>GitHub 联网搜索:「${esc(g.query)}」(${d.items.length} 个结果)${kwTxt ? ` <span class="rdesc">${kwTxt}</span>` : ''}
@@ -1401,6 +1416,30 @@ function bindCatalogGithub(main) {
         btn.disabled = false;
         btn.textContent = '安装';
         throw err;
+      }
+    })));
+  // MCP 仓库的「添加」:先让服务端从 README 提取启动配置,再开编辑弹窗预填(提取不到就只带名字与提示,手动补全)
+  main.querySelectorAll('[data-gh-mcp]').forEach((btn) =>
+    btn.addEventListener('click', () => run(async () => {
+      btn.disabled = true;
+      btn.textContent = '读取配置…';
+      try {
+        const cfg = await api('GET', `/api/catalog/github/mcp-config?repo=${encodeURIComponent(btn.dataset.ghMcp)}`);
+        const item = state.catalogGithub?.data?.items.find((i) => i.repo === btn.dataset.ghMcp);
+        openMcpServerModal(null, {
+          name: cfg.name,
+          description: item?.description || '',
+          ...(cfg.spec || {}),
+          _repo: cfg.repo,
+          _hint: cfg.spec
+            ? '已按仓库 README 预填配置,请核对(路径/密钥占位符需自行替换)后点「添加」'
+            : `未能自动提取配置(${cfg.message || 'README 无 mcpServers 配置块'}),请参照仓库说明手动填写`,
+          // 保存成功后把结果卡片原地标记为已添加(禁用态)
+          _onSaved: () => { if (item) { item.installed = true; item.installedCount = 1; } },
+        });
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '添加';
       }
     })));
 }
@@ -1501,8 +1540,8 @@ function renderCatalog() {
     <div class="main-title">推荐库</div>
     <div class="main-sub">精选高 star 的 skills 仓库与常用 MCP 服务:skill 一键安装到中央库(整仓登记);MCP 一键加入中央注册表,绑定项目后 apply 写入各 agent 配置</div>
     <div class="cat-toolbar">
-      <input type="text" id="cat-q" placeholder="搜索名称 / 描述 / 仓库;也可输入需求,点右侧按钮联网搜 GitHub…" value="${esc(state.catalogQuery)}" />
-      <button class="btn btn-sm" id="cat-gh-search">GitHub 搜索</button>
+      <input type="text" id="cat-q" placeholder="搜索名称 / 描述 / 仓库;也可输入需求联网搜 GitHub(含 mcp 词或「MCP 服务」标签页下自动搜 MCP server 仓库)…" value="${esc(state.catalogQuery)}" />
+      <button class="btn btn-sm" id="cat-gh-search" title="联网搜 GitHub:skills 按 agent-skills topic;MCP server 按 mcp-server / model-context-protocol topic">GitHub 搜索</button>
       <button class="btn btn-sm" id="cat-ai-search" title="用「设置」里配置的模型把需求提炼成英文关键词再搜">AI 搜索</button>
     </div>
     <div class="cat-tabs">

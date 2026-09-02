@@ -9,10 +9,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   CATALOG,
   CATALOG_CATEGORIES,
+  fetchGithubMcpConfig,
   listCatalog,
   listCatalogCategories,
   listCatalogWithInstalled,
   searchCatalogGithub,
+  suggestMcpName,
 } from '../src/core/catalog.js';
 import { updateAiConfig } from '../src/core/ai.js';
 import { installFromGithub, LibraryError, registerSkillsIn } from '../src/core/library.js';
@@ -344,5 +346,162 @@ describe('searchCatalogGithub 联网搜索', () => {
     expect(r.items).toEqual([]);
     expect(r.message).toContain('请输入');
     expect(called).toBe(0);
+  });
+});
+
+describe('searchCatalogGithub 联网搜索 MCP 仓库(kind=mcp)', () => {
+  it('显式 kind=mcp:按 mcp-server/model-context-protocol 两个 topic 搜,合并去重,条目带 kind', async () => {
+    const ghQueries: string[] = [];
+    const r = await searchCatalogGithub('matlab', {
+      kind: 'mcp',
+      fetchImpl: mockCatalogFetch({
+        ghQueries,
+        byKeyword: { matlab: [ghRepo('matlab/matlab-mcp-server', 1442), ghRepo('jigarbhoye04/MatlabMCP', 19)] },
+      }),
+    });
+    expect(r.kind).toBe('mcp');
+    // 一个关键词 × 两个 MCP topic;两个 topic 返回同一批仓库,结果按 full_name 去重
+    expect(ghQueries).toHaveLength(2);
+    expect(ghQueries[0]).toContain('topic:mcp-server matlab');
+    expect(ghQueries[1]).toContain('topic:model-context-protocol matlab');
+    expect(r.items.map((i) => i.repo)).toEqual(['matlab/matlab-mcp-server', 'jigarbhoye04/MatlabMCP']);
+    expect(r.items.every((i) => i.kind === 'mcp' && !i.installed)).toBe(true);
+  });
+
+  it('搜索词含独立单词 mcp 时自动按 mcp 搜;裸 mcp 词不参与检索', async () => {
+    const ghQueries: string[] = [];
+    const r = await searchCatalogGithub('matlab mcp', {
+      fetchImpl: mockCatalogFetch({ ghQueries, byKeyword: { matlab: [ghRepo('matlab/matlab-mcp-server', 1442)] } }),
+    });
+    expect(r.kind).toBe('mcp');
+    // 兜底关键词是 ["matlab","mcp"],裸 "mcp" 被滤掉,只按 matlab 搜两个 topic
+    expect(ghQueries).toHaveLength(2);
+    expect(ghQueries[0]).toContain('topic:mcp-server matlab');
+    expect(ghQueries[1]).toContain('topic:model-context-protocol matlab');
+    expect(r.items.map((i) => i.repo)).toEqual(['matlab/matlab-mcp-server']);
+  });
+
+  it('kind=mcp 时 installed 按 mcps.json 里的建议 server 名判定(大小写不敏感)', async () => {
+    await upsertMcp({ name: 'MatlabMCP', command: 'python server.py' });
+    const r = await searchCatalogGithub('matlab', {
+      kind: 'mcp',
+      fetchImpl: mockCatalogFetch({
+        byKeyword: { matlab: [ghRepo('matlab/matlab-mcp-server', 1442), ghRepo('jigarbhoye04/MatlabMCP', 19)] },
+      }),
+    });
+    // MatlabMCP 仓库名建议名即 MatlabMCP,与注册表条目同名 → 标记已添加;另一个未添加
+    const byRepo = Object.fromEntries(r.items.map((i) => [i.repo, i]));
+    expect(byRepo['jigarbhoye04/MatlabMCP'].installed).toBe(true);
+    expect(byRepo['matlab/matlab-mcp-server'].installed).toBe(false);
+  });
+
+  it('skill 口径不受影响:显式 kind=skill 仍只搜 agent-skills topic,即使搜索词含 mcp', async () => {
+    const ghQueries: string[] = [];
+    const r = await searchCatalogGithub('matlab mcp', { kind: 'skill', fetchImpl: mockCatalogFetch({ ghQueries, byKeyword: {} }) });
+    expect(r.kind).toBe('skill');
+    expect(ghQueries.length).toBeGreaterThan(0);
+    expect(ghQueries.every((u) => u.includes('topic:agent-skills'))).toBe(true);
+  });
+});
+
+// ---------- fetchGithubMcpConfig:从仓库 README 提取 MCP 启动配置;网络层注入假 fetch ----------
+
+/** 假 fetch:只回答 api.github.com/repos/<repo>/readme,返回 base64 的 README;status 指定时按错误响应 */
+function mockReadmeFetch(readme: string, opts: { status?: number } = {}): typeof fetch {
+  return (async (url: unknown) => {
+    const u = String(url);
+    if (u.includes('api.github.com/repos/') && u.endsWith('/readme')) {
+      if (opts.status) return { ok: false, status: opts.status, json: async () => ({}), text: async () => '' };
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ content: Buffer.from(readme, 'utf8').toString('base64'), encoding: 'base64' }),
+        text: async () => '',
+      };
+    }
+    throw new Error(`unexpected url: ${u}`);
+  }) as unknown as typeof fetch;
+}
+
+describe('fetchGithubMcpConfig 从 README 提取 MCP 配置', () => {
+  it('mcpServers JSON 块 → stdio 配置(command/args/env;非字符串 env 值被丢弃)', async () => {
+    const md = [
+      '# Filesystem MCP', '',
+      '```json',
+      JSON.stringify({
+        mcpServers: {
+          filesystem: {
+            command: 'npx',
+            args: ['-y', '@modelcontextprotocol/server-filesystem', '/tmp'],
+            env: { API_KEY: 'YOUR_KEY', PORT: 8080 },
+          },
+        },
+      }),
+      '```',
+    ].join('\n');
+    const r = await fetchGithubMcpConfig('modelcontextprotocol/servers', mockReadmeFetch(md));
+    expect(r.repo).toBe('modelcontextprotocol/servers');
+    expect(r.name).toBe('servers');
+    expect(r.message).toBeUndefined();
+    expect(r.spec).toEqual({
+      transport: 'stdio',
+      command: 'npx',
+      args: ['-y', '@modelcontextprotocol/server-filesystem', '/tmp'],
+      env: { API_KEY: 'YOUR_KEY' },
+    });
+  });
+
+  it('VS Code 风格 servers 键也识别;多 server 时优先与仓库名相近的条目', async () => {
+    const md = [
+      '```json',
+      JSON.stringify({
+        servers: {
+          unrelated: { command: 'npx', args: ['-y', 'other'] },
+          matlab: { type: 'stdio', command: '/opt/matlab-mcp-server', args: [] },
+        },
+      }),
+      '```',
+    ].join('\n');
+    const r = await fetchGithubMcpConfig('matlab/matlab-mcp-server', mockReadmeFetch(md));
+    expect(r.name).toBe('matlab-mcp-server');
+    expect(r.spec).toEqual({ transport: 'stdio', command: '/opt/matlab-mcp-server', args: [], env: undefined });
+  });
+
+  it('远端条目:url + type=sse → sse 配置带 headers', async () => {
+    const md = ['```json', JSON.stringify({ mcpServers: { r: { type: 'sse', url: 'https://mcp.example.com/sse', headers: { Authorization: 'Bearer x' } } } }), '```'].join('\n');
+    const r = await fetchGithubMcpConfig('a/b', mockReadmeFetch(md));
+    expect(r.spec).toEqual({ transport: 'sse', url: 'https://mcp.example.com/sse', headers: { Authorization: 'Bearer x' } });
+  });
+
+  it('README 无配置块:降级 spec=null + message,不抛异常', async () => {
+    const r = await fetchGithubMcpConfig('a/b', mockReadmeFetch('# 纯文字 README\n没有任何配置块\n```sh\nnpm install\n```\n'));
+    expect(r.spec).toBeNull();
+    expect(r.message).toContain('mcpServers');
+  });
+
+  it('仓库格式非法:抛 McpError(→400),不发网络请求', async () => {
+    let called = 0;
+    await expect(
+      fetchGithubMcpConfig('not a repo', (async () => { called++; throw new Error('x'); }) as unknown as typeof fetch),
+    ).rejects.toThrow('格式非法');
+    expect(called).toBe(0);
+  });
+
+  it('GitHub 404 / 网络异常:降级 spec=null + message,不抛异常', async () => {
+    const r404 = await fetchGithubMcpConfig('a/b', mockReadmeFetch('', { status: 404 }));
+    expect(r404.spec).toBeNull();
+    expect(r404.message).toContain('404');
+    const rNet = await fetchGithubMcpConfig('a/b', (async () => { throw new Error('ENOTFOUND'); }) as unknown as typeof fetch);
+    expect(rNet.spec).toBeNull();
+    expect(rNet.message).toContain('网络不可用');
+  });
+});
+
+describe('suggestMcpName server 名清洗', () => {
+  it('合法名原样保留;非法字符转 - 并收敛;空结果兜底;截断 64', () => {
+    expect(suggestMcpName('matlab-mcp-server')).toBe('matlab-mcp-server');
+    expect(suggestMcpName('MCP.Server  2')).toBe('MCP-Server-2');
+    expect(suggestMcpName('---')).toBe('mcp-server');
+    expect(suggestMcpName('x'.repeat(80))).toHaveLength(64);
   });
 });

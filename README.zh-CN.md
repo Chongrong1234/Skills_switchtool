@@ -53,7 +53,7 @@ ssw project switch api-server    # 激活项目 → 该项目的技能组合自�
 | 🌐 **全局共享** | 项目配方之外,还可把选定 skills 物化到各 agent 的**用户级**目录(`~/.claude/skills` 等):一次配置,该 agent 的所有项目共享 |
 | 📦 **配置库整体搬家** | `ssw profile export/import` 把技能库 + MCP + 项目档案 + 全局共享打成单文件,跨机器、跨平台共享同一份配置;导入幂等 |
 | 🤝 **收养既有 skills** | `ssw skill adopt` 把各 agent 目录里已存在的 skills 一键收进中央库,先纳管再统一分发;`--all` 一次扫描所有 agent(同名去重);桌面 App **启动时自动收养**本机各 agent 的用户级 skills,打开即见 |
-| 🔍 **智能推荐 + 内置推荐库** | 识别项目技术栈推荐 GitHub 高 star skills;另内置 111 个精选 skill 仓库 + 26 个常用 MCP server / 13 大类(分类带条目统计),skills 与 MCP 分流浏览、分开安装,离线可用;推荐库还可**联网搜 GitHub**(结果带仓库链接直达),输入自然语言需求可让已配置的 AI 先提炼搜索关键词、再查最相关;断网安静降级 |
+| 🔍 **智能推荐 + 内置推荐库** | 识别项目技术栈推荐 GitHub 高 star skills;另内置 111 个精选 skill 仓库 + 26 个常用 MCP server / 13 大类(分类带条目统计),skills 与 MCP 分流浏览、分开安装,离线可用;推荐库还可**联网搜 GitHub**(结果带仓库链接直达)——skills 按 agent-skills topic 搜,搜索词含 mcp(或类型过滤选「仅 MCP」)时自动改搜 mcp-server / model-context-protocol 仓库,MCP 结果一键「添加」即从仓库 README 提取启动配置、预填弹窗确认后进注册表;输入自然语言需求可让已配置的 AI 先提炼搜索关键词、再查最相关;断网安静降级 |
 | 🤖 **AI 技能推荐** | 填一句开发需求,AI 读本地技能库给出推荐供勾选绑定,并**联网搜 GitHub** 相关仓库(模型给搜索关键词,需求英文词兜底;可一键安装并绑定);新建项目与**项目详情页可多次调用**;模型/baseUrl/API Key 在设置里配,官方端点或 OpenAI 兼容中转站均可(预设 Kimi/DeepSeek/OpenAI/OpenRouter);未配置或断网安静降级 |
 | 🔥 **热度排序选配** | 给项目/全局共享选技能时,常用的排前面:记录每个 skill 的使用次数(绑定即计、只增不减)、GitHub 仓库 stars(安装/更新时采集),再结合项目技术栈与名称关键词匹配加权排序;AI 推荐也把 stars/用量作为相关度相近时的优先依据 |
 | ⬆️ **自动更新** | 对照 GitHub Releases 检查新版本(6h 缓存,断网安静降级);侧栏横幅 + 设置弹窗展示新版本,一键下载当前平台安装包(带进度条),可配置启动自动检查与自动下载;CLI 用 `ssw update`,终端面板按 `U` |
@@ -190,7 +190,7 @@ i AI 推荐 / g 全局共享 / d 环境自检 / q 退出
 
 面板、子命令与桌面 App 共用同一份状态(`~/.skills-switch/`),任一端的改动处处可见。
 
-纯命令行子命令面向脚本与自动化场景(管道等非 TTY 环境下裸跑会打印帮助),常用的有:`doctor` 环境自检、`project create/switch/apply`、`skill add/list/adopt`、`skill update [--check]` 技能库更新检查/一键更新、`catalog install`、`catalog --github/--ai` 推荐库联网搜索、`mcp add`、`global apply`、`profile export/import`、`ai recommend`、`update` 软件更新检查/下载 等;完整清单与参数用 `ssw --help` 或 `ssw <命令> --help` 查看。约定:项目与 skill 支持 `id|name` 寻址;全局 `--json` 输出方便脚本化;错误打 stderr、退出码非零。
+纯命令行子命令面向脚本与自动化场景(管道等非 TTY 环境下裸跑会打印帮助),常用的有:`doctor` 环境自检、`project create/switch/apply`、`skill add/list/adopt`、`skill update [--check]` 技能库更新检查/一键更新、`catalog install`、`catalog --github/--ai` 推荐库联网搜索(`--kind mcp` 或搜索词含 mcp 时搜 MCP server 仓库)、`mcp add`(`--github <owner/repo>` 从仓库 README 提取启动配置一键添加)、`global apply`、`profile export/import`、`ai recommend`、`update` 软件更新检查/下载 等;完整清单与参数用 `ssw --help` 或 `ssw <命令> --help` 查看。约定:项目与 skill 支持 `id|name` 寻址;全局 `--json` 输出方便脚本化;错误打 stderr、退出码非零。
 
 本机使用:`npm run build` 后 `node dist/cli.js ...`(`npm link` 后可直接 `ssw ...` 或 `skills ...`)。
 

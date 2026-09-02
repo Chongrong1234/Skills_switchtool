@@ -3,6 +3,32 @@
 本项目遵循语义化版本;版本号单一来源是 `package.json`。
 发布走 `npm run release`(干净工作区检查 → 全量测试 → 打 tag → 推送,tag 触发三平台 Release 构建)。
 
+## v1.8.0(2026-09-02)
+
+修复「推荐库联网搜索找不到/装不了 MCP server 仓库」(例如官方 matlab/matlab-mcp-server):
+旧口径只搜 `topic:agent-skills`(纯 skills 生态标签,MCP 仓库不带),搜 "matlab mcp" 零结果;
+即使拿到仓库地址也只能走 skill 整仓安装,因无 SKILL.md 报「未找到合法 skill」。
+
+- **core `searchCatalogGithub` 支持 MCP 仓库搜索**(`src/core/catalog.ts`):新增 `kind: 'skill' | 'mcp'`,
+  mcp 模式按 `topic:mcp-server` + `topic:model-context-protocol` 一词两查合并去重(裸 "mcp"/"server"
+  关键词不参与检索,防泛化淹没);kind 缺省自动判定——搜索词含独立单词 mcp(如 "matlab mcp")即按
+  MCP 搜;结果与条目都带 kind;installed 口径:skill 按注册表仓库前缀、mcp 按建议 server 名
+  (`suggestMcpName` 清洗仓库名)比对 mcps.json
+- **core `fetchGithubMcpConfig(repo)`**:MCP 的「下载」落地——MCP 是纯配置无实体,经 GitHub API 取
+  默认分支 README,扫 ```json 围栏块提取 mcpServers(Claude 风格)/ servers(VS Code 风格)里的
+  启动配置(command/args/env 或 url/serverUrl+headers,type=sse 识别),多 server 优先与仓库名相近者;
+  仓库格式非法抛 McpError(→400),网络/无配置块降级 `{ spec: null, message }` 不抛
+- **REST**:`GET /api/catalog/github` 新增 `kind=skill|mcp`(非法 400);新增
+  `GET /api/catalog/github/mcp-config?repo=<>`(repo 必填,提取不到 200 + spec:null + message)
+- **CLI**:`ssw mcp add --github <owner/repo>` 一键提取 README 配置写入注册表(--name 可省按仓库名推导,
+  与 --command/--url 等互斥;提取不到报错并给手动添加指引);`catalog --q --github` 透传 `--kind`,
+  输出按仓库类型分流安装/添加指引
+- **桌面 GUI**:推荐库联网搜索跟随类型标签页(仅 MCP 时搜 MCP 仓库);结果卡片分类型带
+  skills/MCP 标签,MCP 卡片为「添加」按钮——点击即读 README 配置、打开 MCP 弹窗预填
+  (名称/描述/传输/命令参数一应预填,提取不到则有提示引导手动填),保存后卡片原地转「已添加」
+- **TUI**:推荐库视图 / 与 i 搜索随 k 键类型过滤传 kind;结果行带 [MCP] 标记,底部指引按类型
+  分流(MCP → `ssw mcp add --github`)
+
 ## v1.7.1(2026-09-02)
 
 桌面 App 界面自适应(纯 CSS 响应式断点,不改 DOM 结构与交互):

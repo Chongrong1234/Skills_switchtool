@@ -23,13 +23,21 @@
  * MCP 条目标准:npm 包名/远端端点经 npm registry 与官方文档逐一核验(2026-08),优先官方与官方托管;
  * 托管端点核验方式为探测其存活(401/400 即服务在线),密钥一律占位符。
  *
- * searchCatalogGithub:推荐库的联网搜索——按关键词搜 GitHub 的 topic:agent-skills 仓库
- * (复用 recommend 的 24h 缓存),结果带仓库链接,已入库仓库只标记 installed 不排除;
+ * searchCatalogGithub:推荐库的联网搜索——分两类仓库:
+ * - skill(缺省):按 `topic:agent-skills <关键词>` 搜(复用 recommend 的 24h 缓存);
+ * - mcp:按 `topic:mcp-server` / `topic:model-context-protocol` 搜(MCP server 仓库不带 agent-skills
+ *   topic,旧口径搜不到——例如官方的 matlab/matlab-mcp-server);搜索词含独立单词 mcp 时自动按 mcp 搜,
+ *   也可由调用方显式传 kind(GUI 类型标签页/CLI --kind/TUI k 键)。
+ * 结果带仓库链接,已入库(skill 按注册表前缀、mcp 按建议 server 名比对 mcps.json)只标记 installed 不排除;
  * ai:true 时先让已配置的 AI 把自然语言需求提炼成英文关键词(aiExtractGithubKeywords),
  * 提炼失败/未配置自动降级为需求英文词兜底,再不行整句直搜;一切失败降级空数组 + message 不抛。
+ * fetchGithubMcpConfig:MCP 仓库的「下载」落地方式——MCP 是纯配置无实体,从仓库 README 的
+ * mcpServers/servers(VS Code 风格)JSON 配置块里 best-effort 提取启动配置(command/args/env 或
+ * url/headers),供 GUI 弹窗预填 / CLI mcp add --github / TUI Enter 直接写入注册表;
+ * 提取不到(如 matlab-mcp-server 需手工下载 release 二进制)降级 spec:null + message 引导手动填。
  */
 import { aiExtractGithubKeywords, fallbackGithubKeywords } from './ai.js';
-import { readMcps } from './mcps.js';
+import { McpError, readMcps } from './mcps.js';
 import { searchGithubSkillsCached } from './recommend.js';
 import { readRegistry } from './registry.js';
 
@@ -316,7 +324,7 @@ export async function listCatalogWithInstalled(filter: CatalogFilter = {}): Prom
   });
 }
 
-/** GitHub 联网搜索结果条目(推荐库「GitHub 搜索」;链接直达仓库,可一键安装) */
+/** GitHub 联网搜索结果条目(推荐库「GitHub 搜索」;链接直达仓库,可一键安装/添加) */
 export interface CatalogGithubItem {
   repo: string;        // owner/repo
   name: string;
@@ -324,14 +332,16 @@ export interface CatalogGithubItem {
   stars: number;
   description: string;
   keyword: string;     // 命中的搜索关键词(AI 提炼或需求兜底)
-  installed: boolean;  // 库中已有该仓库的条目(不排除,仅标记——与本地条目卡片语义一致)
+  installed: boolean;  // skill:库中已有该仓库条目;mcp:mcps.json 已有同名(建议名)server。只标记不排除
   installedCount: number;
+  kind: 'skill' | 'mcp'; // 决定前端动作:skill「安装」整仓克隆;mcp「添加」写注册表(配置从 README 提取)
 }
 
 export interface CatalogGithubSearchResult {
   items: CatalogGithubItem[];
-  keywords: string[]; // 实际使用的搜索词(提炼失败时可能是兜底词或需求整句)
+  keywords: string[]; // 实际使用的搜索词(提炼失败时可能是兜底词或需求整句;mcp 模式下裸 "mcp" 词不参与检索)
   ai: boolean;        // 关键词是否确实由 AI 提炼(false = 直连或兜底)
+  kind: 'skill' | 'mcp'; // 本次搜索的仓库类型(显式指定或按搜索词自动判定)
   model?: string;
   message?: string;   // 降级说明(未配置 AI/限流/断网/无结果等)
 }
@@ -342,14 +352,19 @@ export const MAX_CATALOG_GITHUB_RESULTS = 12;
 export interface CatalogGithubSearchOptions {
   /** true = 先用已配置的 AI 把自然语言需求提炼成英文关键词再搜(失败自动降级) */
   ai?: boolean;
+  /** 搜哪类仓库:skill = topic:agent-skills(旧口径);mcp = topic:mcp-server / topic:model-context-protocol。
+   *  缺省自动判定:搜索词/需求里含独立单词 "mcp"(如 "matlab mcp")时按 mcp 搜,否则按 skill 搜 */
+  kind?: 'skill' | 'mcp';
   /** 测试注入;缺省用全局 fetch */
   fetchImpl?: typeof fetch;
 }
 
 /**
- * 推荐库联网搜索:按关键词搜 GitHub 的 topic:agent-skills 仓库(24h 缓存复用 recommend.ts),
- * 多关键词结果合并去重(full_name 小写)、按 star 降序、上限 MAX_CATALOG_GITHUB_RESULTS。
- * 已入库的仓库只标 installed 不排除(用户可能想更新/重装);一切失败降级空数组 + message,不抛异常。
+ * 推荐库联网搜索(24h 缓存复用 recommend.ts),多关键词结果合并去重(full_name 小写)、
+ * 按 star 降序、上限 MAX_CATALOG_GITHUB_RESULTS。已入库的仓库只标 installed 不排除(用户可能想更新/重装);
+ * 一切失败降级空数组 + message,不抛异常。
+ * kind=mcp 时改搜 MCP 生态 topic(mcp-server / model-context-protocol,一词两查合并),
+ * 裸 "mcp"/"server" 关键词不参与检索(不带信息量,还会让 top MCP 仓淹没结果)。
  */
 export async function searchCatalogGithub(
   query: string,
@@ -357,7 +372,9 @@ export async function searchCatalogGithub(
 ): Promise<CatalogGithubSearchResult> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const q = query.trim();
-  if (!q) return { items: [], keywords: [], ai: false, message: '请输入搜索词或需求描述' };
+  // 搜索哪类仓库:显式 kind 优先;否则搜索词含独立单词 "mcp"("matlab mcp" 这种)自动按 MCP server 搜
+  const kind: 'skill' | 'mcp' = options.kind ?? (/(^|[^a-z0-9])mcp([^a-z0-9]|$)/i.test(q) ? 'mcp' : 'skill');
+  if (!q) return { items: [], keywords: [], ai: false, kind, message: '请输入搜索词或需求描述' };
 
   // ---- 搜索词:ai 模式先让模型提炼;失败/未配置降级为需求英文词兜底,再不行整句直搜 ----
   let keywords: string[] = [];
@@ -376,44 +393,199 @@ export async function searchCatalogGithub(
   if (!keywords.length) keywords = fallbackGithubKeywords(q);
   if (!keywords.length) keywords = [q.slice(0, 40)]; // 纯中文需求:整句交给 GitHub 搜索
 
+  // 每个关键词展开成实际查询(mcp 模式一词两 topic);kw 记录到结果条目上标示命中来源。
+  // keywords 的展示值保留原词(含 "mcp"),免得和用户输入对不上;检索词才做过滤
+  const plan: { query: string; kw: string }[] = [];
+  if (kind === 'mcp') {
+    const kws = keywords.filter((k) => !/^(mcp[-_ ]?server|mcp|server)s?$/i.test(k.trim()));
+    for (const kw of kws.length ? kws : ['']) {
+      plan.push({ query: `topic:mcp-server ${kw}`.trim(), kw: kw || q.slice(0, 40) });
+      plan.push({ query: `topic:model-context-protocol ${kw}`.trim(), kw: kw || q.slice(0, 40) });
+    }
+  } else {
+    for (const kw of keywords) plan.push({ query: `topic:agent-skills ${kw}`, kw });
+  }
+
   try {
-    const perKw = await Promise.all(keywords.map((kw) => searchGithubSkillsCached(`topic:agent-skills ${kw}`, fetchImpl)));
-    const registry = await readRegistry();
-    const countOf = (repo: string): number => {
-      const prefix = `${repo.toLowerCase()}:`;
-      return registry.filter((s) => s.id.toLowerCase().startsWith(prefix)).length;
-    };
+    const perQuery = await Promise.all(plan.map((p) => searchGithubSkillsCached(p.query, fetchImpl)));
+    // installed 口径:skill 按注册表 id 前缀("<owner/repo>:");mcp 按建议 server 名是否已在 mcps.json
+    const registry = kind === 'skill' ? await readRegistry() : null;
+    const mcpNames = kind === 'mcp' ? new Set((await readMcps()).map((m) => m.name.toLowerCase())) : null;
     const seen = new Set<string>();
     const items: CatalogGithubItem[] = [];
-    for (let i = 0; i < keywords.length; i++) {
-      for (const r of perKw[i]) {
+    for (let i = 0; i < plan.length; i++) {
+      for (const r of perQuery[i]) {
         const key = r.full_name.toLowerCase();
         if (seen.has(key)) continue;
         seen.add(key);
-        const installedCount = countOf(r.full_name);
+        let installed = false;
+        let installedCount = 0;
+        if (kind === 'mcp') {
+          installed = mcpNames!.has(suggestMcpName(r.name).toLowerCase());
+          installedCount = installed ? 1 : 0;
+        } else {
+          const prefix = `${key}:`;
+          installedCount = registry!.filter((s) => s.id.toLowerCase().startsWith(prefix)).length;
+          installed = installedCount > 0;
+        }
         items.push({
           repo: r.full_name,
           name: r.name,
           url: r.html_url,
           stars: r.stargazers_count,
           description: r.description ?? '',
-          keyword: keywords[i],
-          installed: installedCount > 0,
+          keyword: plan[i].kw,
+          installed,
           installedCount,
+          kind,
         });
       }
     }
     items.sort((a, b) => b.stars - a.stars);
     const sliced = items.slice(0, MAX_CATALOG_GITHUB_RESULTS);
-    if (!sliced.length && !message) message = 'GitHub 上没有找到匹配的 agent-skills 仓库(换个关键词试试)';
-    return { items: sliced, keywords, ai, model, message };
+    if (!sliced.length && !message) {
+      message = kind === 'mcp'
+        ? 'GitHub 上没有找到匹配的 MCP server 仓库(换个关键词试试)'
+        : 'GitHub 上没有找到匹配的 agent-skills 仓库(换个关键词试试)';
+    }
+    return { items: sliced, keywords, ai, kind, model, message };
   } catch (err) {
     return {
       items: [],
       keywords,
       ai,
+      kind,
       model,
       message: `GitHub 搜索不可用(已降级): ${err instanceof Error ? err.message : String(err)}`,
     };
   }
+}
+
+/** 由仓库名建议一个合法 MCP server 名:非法字符转 -、收敛连续 -、去首尾 -、截 64;兜底 'mcp-server' */
+export function suggestMcpName(repoName: string): string {
+  const cleaned = repoName
+    .replace(/[^A-Za-z0-9_-]+/g, '-')
+    .replace(/-{2,}/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64);
+  return cleaned || 'mcp-server';
+}
+
+/** fetchGithubMcpConfig 的结果:spec 为 null 表示没提取到(原因在 message),调用方引导手动填写 */
+export interface GithubMcpConfigResult {
+  repo: string;               // 规范化后的 owner/repo
+  name: string;               // 建议的 server 名(仓库名经 suggestMcpName 清洗)
+  spec: CatalogMcpSpec | null;
+  message?: string;
+}
+
+/** 仓库输入白名单:owner/repo 或完整 GitHub URL(与 normalizeGithubUri 同口径,防止注入奇怪路径) */
+const GITHUB_REPO_INPUT_RE = /^(?:https?:\/\/github\.com\/)?([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/;
+
+/**
+ * 从 GitHub 仓库 README 提取 MCP server 启动配置(best-effort):
+ * 经 GitHub API 拿默认分支 README(base64),扫其中的 ```json 围栏块,找含 mcpServers(Claude 风格)
+ * 或 servers(VS Code 风格)键的对象,取与仓库名相近的第一个 server 条目转成 CatalogMcpSpec。
+ * 仓库非法抛 McpError(→400);网络/解析失败一律降级 { spec: null, message },不抛异常——
+ * 很多 MCP 仓库(如 matlab-mcp-server,需手工下载 release 二进制)本就没有可直接套用的配置。
+ */
+export async function fetchGithubMcpConfig(
+  repo: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<GithubMcpConfigResult> {
+  const m = GITHUB_REPO_INPUT_RE.exec(repo.trim());
+  if (!m) throw new McpError(`GitHub 仓库格式非法: ${repo}(应为 owner/repo 或完整 GitHub URL)`);
+  const fullName = `${m[1]}/${m[2]}`;
+  const name = suggestMcpName(m[2]);
+  let readme: string;
+  try {
+    const res = await fetchImpl(`https://api.github.com/repos/${fullName}/readme`, {
+      headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'skills-switchtool' },
+    });
+    if (!res.ok) {
+      return { repo: fullName, name, spec: null, message: `README 获取失败(GitHub API 返回 ${res.status}),请参照仓库说明手动填写` };
+    }
+    const data = (await res.json()) as { content?: string; encoding?: string };
+    if (data.encoding !== 'base64' || !data.content) {
+      return { repo: fullName, name, spec: null, message: 'README 内容不可读,请参照仓库说明手动填写' };
+    }
+    // GitHub 的 base64 内容带换行,先去掉空白再解码
+    readme = Buffer.from(data.content.replace(/\s+/g, ''), 'base64').toString('utf8');
+  } catch (err) {
+    return { repo: fullName, name, spec: null, message: `网络不可用(已降级): ${err instanceof Error ? err.message : String(err)}` };
+  }
+  const spec = extractMcpSpecFromReadme(readme, name);
+  if (!spec) {
+    return { repo: fullName, name, spec: null, message: 'README 中未找到 mcpServers 配置块,请参照仓库说明手动填写' };
+  }
+  return { repo: fullName, name, spec };
+}
+
+/** 从 README markdown 里提取第一个可用的 MCP server 配置;提取不到返回 null(纯函数,便于测试) */
+function extractMcpSpecFromReadme(md: string, preferName: string): CatalogMcpSpec | null {
+  const fenceRe = /```([a-zA-Z]*)\s*\n([\s\S]*?)```/g;
+  let match: RegExpExecArray | null;
+  while ((match = fenceRe.exec(md))) {
+    const lang = match[1].toLowerCase();
+    if (lang && lang !== 'json' && lang !== 'jsonc') continue; // 只看 json 围栏与未标注的块
+    const body = match[2].trim();
+    if (!body.startsWith('{')) continue;
+    let obj: unknown;
+    try {
+      obj = JSON.parse(body); // jsonc 注释/尾逗号解析失败就跳过该块,不做脆弱的正则清洗
+    } catch {
+      continue;
+    }
+    const spec = specFromServersObject(obj, preferName);
+    if (spec) return spec;
+  }
+  return null;
+}
+
+/** 从解析出的 JSON 对象里取 mcpServers/servers 映射,挑一个 server 条目转 CatalogMcpSpec */
+function specFromServersObject(obj: unknown, preferName: string): CatalogMcpSpec | null {
+  if (!obj || typeof obj !== 'object') return null;
+  const root = obj as Record<string, unknown>;
+  const servers = (root.mcpServers ?? root.servers) as Record<string, unknown> | undefined;
+  if (!servers || typeof servers !== 'object') return null;
+  const keys = Object.keys(servers);
+  if (!keys.length) return null;
+  // 多个 server 时优先名字与仓库名相近的(互含,大小写不敏感),否则取第一个
+  const prefer = preferName.toLowerCase();
+  const key = keys.find((k) => {
+    const kl = k.toLowerCase();
+    return prefer.includes(kl) || kl.includes(prefer);
+  }) ?? keys[0];
+  return normalizeMcpServerJson(servers[key]);
+}
+
+/** 单条 server JSON → CatalogMcpSpec:有 command 即 stdio;有 url/serverUrl 即远端(type/transport=sse 时按 sse) */
+function normalizeMcpServerJson(entry: unknown): CatalogMcpSpec | null {
+  if (!entry || typeof entry !== 'object') return null;
+  const e = entry as Record<string, unknown>;
+  // env/headers 只保留字符串值(README 里的配置块常有 null/嵌套等脏数据)
+  const strMap = (v: unknown): Record<string, string> | undefined => {
+    if (!v || typeof v !== 'object') return undefined;
+    const out: Record<string, string> = {};
+    for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+      if (typeof val === 'string') out[k] = val;
+    }
+    return Object.keys(out).length ? out : undefined;
+  };
+  if (typeof e.command === 'string' && e.command.trim()) {
+    return {
+      transport: 'stdio',
+      command: e.command,
+      args: Array.isArray(e.args) ? e.args.filter((a): a is string => typeof a === 'string') : undefined,
+      env: strMap(e.env),
+    };
+  }
+  const url = typeof e.url === 'string' && e.url.trim() ? e.url
+    : typeof e.serverUrl === 'string' && e.serverUrl.trim() ? e.serverUrl
+    : undefined;
+  if (url) {
+    const t = String(e.type ?? e.transport ?? '').toLowerCase();
+    return { transport: t === 'sse' ? 'sse' : 'http', url, headers: strMap(e.headers) };
+  }
+  return null;
 }

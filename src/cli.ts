@@ -42,7 +42,7 @@ import {
   toPublicConfig,
   updateAiConfig,
 } from './core/ai.js';
-import { CATALOG, listCatalogCategories, listCatalogWithInstalled, searchCatalogGithub } from './core/catalog.js';
+import { CATALOG, fetchGithubMcpConfig, listCatalogCategories, listCatalogWithInstalled, searchCatalogGithub } from './core/catalog.js';
 import { exportSkillsCode, importSkillsCode, parseSkillsCode } from './core/migrate.js';
 import { rollback } from './core/snapshot.js';
 import { runDoctor } from './core/doctor.js';
@@ -395,8 +395,8 @@ leaf(mcpCmd.command('list').description('列出库中全部 MCP server')).action
 leaf(
   mcpCmd
     .command('add')
-    .description('添加/更新 MCP server(--command 与 --url 二选一)')
-    .requiredOption('--name <name>', 'server 名(字母/数字/下划线/连字符)')
+    .description('添加/更新 MCP server(--command 与 --url 二选一;或 --github 从仓库 README 提取配置)')
+    .option('--name <name>', 'server 名(字母/数字/下划线/连字符;--github 模式可省,按仓库名推导)')
     .option('--command <cmd>', 'stdio:启动命令(如 npx)')
     .option('--args <args>', 'stdio:参数,逗号分隔(如 -y,@mcp/server)')
     .option('--env <pairs>', 'stdio:环境变量,逗号分隔 KEY=V')
@@ -404,11 +404,12 @@ leaf(
     .option('--url <url>', 'http/sse:远端端点')
     .option('--transport <type>', '传输类型: stdio|http|sse(缺省按 --command/--url 推断)')
     .option('--header <pairs>', 'http/sse:静态请求头,逗号分隔 KEY=V')
+    .option('--github <repo>', 'GitHub 仓库(owner/repo 或 URL):从 README 的 mcpServers 配置块提取启动配置')
     .option('--desc <text>', '描述'),
 ).action(
   wrap(async (cmd, opts: {
-    name: string; command?: string; args?: string; env?: string; cwd?: string;
-    url?: string; transport?: string; header?: string; desc?: string;
+    name?: string; command?: string; args?: string; env?: string; cwd?: string;
+    url?: string; transport?: string; header?: string; github?: string; desc?: string;
   }) => {
     // 解析 KEY=V 逗号串(值里允许再有 =,只按第一个 = 切)
     const parsePairs = (s: string | undefined, flag: string): Record<string, string> | undefined => {
@@ -424,6 +425,27 @@ leaf(
     if (opts.transport && !['stdio', 'http', 'sse'].includes(opts.transport)) {
       throw new Error('--transport 只能是 stdio|http|sse');
     }
+    // --github:MCP 仓库的「下载」——从 README 提取启动配置写注册表;提取不到则报错并给手动指引
+    if (opts.github) {
+      if (opts.command || opts.url || opts.args || opts.env || opts.header || opts.transport || opts.cwd) {
+        throw new Error('--github 与 --command/--url/--args/--env/--header/--transport/--cwd 互斥(配置从 README 提取)');
+      }
+      const cfg = await fetchGithubMcpConfig(opts.github);
+      if (!cfg.spec) {
+        throw new Error(
+          `未能从 ${cfg.repo} 提取 MCP 配置(${cfg.message ?? 'README 无配置块'})\n` +
+          `请参照仓库说明手动添加: ssw mcp add --name ${cfg.name} --command <启动命令> [--args <逗号分隔>] 或 --url <端点>`,
+        );
+      }
+      const entry = await upsertMcp({ name: opts.name ?? cfg.name, description: opts.desc, ...cfg.spec });
+      out(cmd, entry, () =>
+        `已添加 MCP server: ${entry.name}(${entry.transport},配置提取自 ${cfg.repo} 的 README)\n` +
+        '提示:若含路径/密钥占位符,请用 ssw mcp add 同名覆盖或在 GUI 的 MCP 页修改\n' +
+        `下一步: ssw project bind-mcp <项目> ${entry.name} 绑定到项目后 apply 生效`,
+      );
+      return;
+    }
+    if (!opts.name) throw new Error('--name 必填(--github 模式下可省,按仓库名推导)');
     if (opts.command && opts.url) throw new Error('--command 与 --url 只能二选一');
     if (!opts.command && !opts.url) throw new Error('必须指定 --command(stdio)或 --url(http/sse)之一');
     const entry = await upsertMcp({
@@ -706,7 +728,7 @@ const catalogCmd = leaf(
     .option('--category <id>', '只看某个分类(id 见 ssw catalog categories)')
     .option('--kind <kind>', '只看某类条目: skill|mcp(skills 与 MCP 分流浏览/安装)')
     .option('--q <keyword>', '关键词过滤(名称/描述/仓库);配合 --github/--ai 即联网搜索')
-    .option('--github', '联网搜索 GitHub 的 agent-skills 仓库(配合 --q;结果带仓库链接)')
+    .option('--github', '联网搜索 GitHub 仓库(配合 --q;agent-skills 或 MCP server,含 mcp 词自动搜 MCP)')
     .option('--ai', '先用已配置的 AI 把 --q 的需求提炼成英文关键词再联网搜索(蕴含 --github)'),
 ).action(
   wrap(async (cmd, opts: { category?: string; kind?: string; q?: string; github?: boolean; ai?: boolean }) => {
@@ -718,8 +740,9 @@ const catalogCmd = leaf(
     const kind = opts.kind as 'skill' | 'mcp' | undefined;
     const items = await listCatalogWithInstalled({ category: opts.category, kind, query: opts.q });
     const cats = listCatalogCategories();
-    // 联网搜索与本地过滤互不阻塞:本地结果照常列出,GitHub 结果追加在后(降级只影响本段)
-    const github = wantGithub ? await searchCatalogGithub(opts.q!.trim(), { ai: !!opts.ai }) : null;
+    // 联网搜索与本地过滤互不阻塞:本地结果照常列出,GitHub 结果追加在后(降级只影响本段);
+    // --kind 同时作用于联网搜索(仅 MCP 时搜 MCP server 仓库;缺省按搜索词含 mcp 与否自动判定)
+    const github = wantGithub ? await searchCatalogGithub(opts.q!.trim(), { ai: !!opts.ai, kind }) : null;
     out(cmd, { categories: cats, items, ...(github ? { github } : {}) }, () => {
       const catName = (id: string) => cats.find((c) => c.id === id)?.name ?? id;
       const lines: string[] = [];
@@ -735,18 +758,24 @@ const catalogCmd = leaf(
       if (github) {
         lines.push('');
         const kwTxt = github.keywords.length ? github.keywords.join(', ') : '-';
+        const kindTxt = github.kind === 'mcp' ? 'MCP server 仓库' : 'agent-skills 仓库';
         lines.push(
           github.ai
-            ? `GitHub 联网搜索(AI 提炼关键词: ${kwTxt}${github.model ? ` · ${github.model}` : ''}):`
-            : `GitHub 联网搜索(关键词: ${kwTxt}):`,
+            ? `GitHub 联网搜索(${kindTxt};AI 提炼关键词: ${kwTxt}${github.model ? ` · ${github.model}` : ''}):`
+            : `GitHub 联网搜索(${kindTxt};关键词: ${kwTxt}):`,
         );
         if (github.message) lines.push(`  (${github.message})`);
         for (const g of github.items) {
-          lines.push(`  ★ ${String(g.stars).padStart(6)}  ${g.repo}${g.installed ? `  (已安装 ${g.installedCount})` : ''}`);
+          const stateTxt = g.installed ? (github.kind === 'mcp' ? '  (已添加)' : `  (已安装 ${g.installedCount})`) : '';
+          lines.push(`  ★ ${String(g.stars).padStart(6)}  ${g.repo}${stateTxt}`);
           if (g.description) lines.push(`            ${g.description}`);
           lines.push(`            ${g.url}`);
         }
-        lines.push('安装: ssw catalog install <owner/repo>(或 ssw skill add --github <owner/repo>)');
+        lines.push(
+          github.kind === 'mcp'
+            ? '添加: ssw mcp add --github <owner/repo>(自动从 README 提取启动配置;提取不到会给出手动添加指引)'
+            : '安装: ssw catalog install <owner/repo>(或 ssw skill add --github <owner/repo>)',
+        );
       } else {
         lines.push(`共 ${items.length} 条;分类清单: ssw catalog categories;只看一类: --kind skill|mcp;安装: ssw catalog install <owner/repo|MCP名>`);
         lines.push('没找到?联网搜索: ssw catalog --q <搜索词或需求> --github(或 --ai 让 AI 提炼关键词)');
