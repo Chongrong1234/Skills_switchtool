@@ -3,6 +3,20 @@
 本项目遵循语义化版本;版本号单一来源是 `package.json`。
 发布走 `npm run release`(干净工作区检查 → 全量测试 → 打 tag → 推送,tag 触发三平台 Release 构建)。
 
+## v1.8.1(2026-09-04)
+
+修复「clone skills 总是失败」:git 调用超时从**固定墙钟**改为**空闲超时**。
+
+- 现象:安装几百 MB 的大仓库(实测 `nexu-io/open-design` 浅克隆 400MB+,慢速链路拖十几分钟)
+  期间进度输出不断,却被 `runGit` 从 spawn 起算的固定 120s 准时 SIGTERM,残目录清理后
+  报「git clone 超时」,表现为每次安装都失败
+- 改动(`src/core/library.ts` `runGit`):超时按**输出续期**——任何 stdout/stderr 到达都重挂
+  定时器,只有安静满 120s(默认,`SSW_GIT_TIMEOUT_MS` 覆盖)才判定挂起并中止;
+  慢速但持续下载的克隆不再被误杀,真正卡死的网络仍会快速报错(挂起判定语义与报错文案同步)
+- 新增回归测试:150ms 空闲窗口下,假 git 每 40ms 输出一行、共跑 ~320ms 的克隆应正常完成
+  (旧实现必被误杀);原有「沉睡 git 快速报超时」用例保持通过
+- 仅 core 改动,GUI/CLI/TUI/REST 四端随新版本自动生效,无需各自接线
+
 ## v1.8.0(2026-09-02)
 
 修复「推荐库联网搜索找不到/装不了 MCP server 仓库」(例如官方 matlab/matlab-mcp-server):

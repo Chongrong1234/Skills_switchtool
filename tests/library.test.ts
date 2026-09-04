@@ -245,6 +245,47 @@ describe('library', () => {
     },
   );
 
+  it.skipIf(process.platform === 'win32')(
+    '慢速但持续输出的大仓库 clone 不被固定墙钟超时误杀(空闲超时语义:有进度就续期)',
+    async () => {
+      // 回归:runGit 曾按 spawn 起算的固定 120s 墙钟掐死 clone——实测 400MB 的浅克隆在慢速
+      // 链路上要拖十几分钟,期间进度输出不断却仍被准时杀掉,表现为"clone 永远失败"。
+      // 这里把空闲窗口压到 150ms,假 git 每 40ms 打一行进度、总共跑 ~320ms(远超窗口):
+      // 旧实现必然被杀报超时;新实现只要还有输出就续期,应正常装完。
+      const binDir = path.join(tmp, 'fake-bin');
+      await fs.mkdir(binDir, { recursive: true });
+      const worker = path.join(binDir, 'git-slow-worker.mjs');
+      await fs.writeFile(
+        worker,
+        `import fs from 'node:fs/promises';
+import path from 'node:path';
+const dest = process.argv[process.argv.length - 1];
+await fs.mkdir(dest, { recursive: true });
+await fs.writeFile(path.join(dest, 'SKILL.md'), '---\\nname: fake-progress\\ndescription: 假 git 造出的慢速 clone 结果\\n---\\n\\n正文\\n');
+for (let i = 1; i <= 8; i++) {
+  process.stderr.write(\`remote: 接收对象中: \${i * 12}% (1/1)\n\`);
+  await new Promise((r) => setTimeout(r, 40));
+}
+`,
+        'utf8',
+      );
+      const fakeGit = path.join(binDir, 'git');
+      await fs.writeFile(fakeGit, `#!/bin/sh\nexec "${process.execPath}" "${worker}" "$@"\n`, 'utf8');
+      await fs.chmod(fakeGit, 0o755);
+      const oldPath = process.env.PATH;
+      process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ''}`;
+      process.env.SSW_GIT_TIMEOUT_MS = '150';
+      try {
+        const installed = await installFromGithub('o/r9');
+        expect(installed.map((e) => e.name)).toContain('fake-progress');
+      } finally {
+        if (oldPath === undefined) delete process.env.PATH;
+        else process.env.PATH = oldPath;
+        delete process.env.SSW_GIT_TIMEOUT_MS;
+      }
+    },
+  );
+
   it('sameRealPath 识别同一位置的不同写法(防自杀式复制绕过)', async () => {
     const dir = path.join(tmp, 'real-dir');
     await fs.mkdir(dir, { recursive: true });

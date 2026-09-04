@@ -72,7 +72,9 @@ src/
                          #   扫描循环抽为 adoptFromDir 供复用);adoptFromAllAgents:一键收养所有 agent
                          #   (user 级按 detect 过滤,目录不存在/同目录复扫记 skippedAgents 不报错,
                          #   同名跨 agent 去重,返回 scanned 分目录明细 + 扁平汇总);
-                         #   git 调用统一走 runGit(spawn 流式读 stderr,返回 stdout):120s 超时(SSW_GIT_TIMEOUT_MS 覆盖)
+                         #   git 调用统一走 runGit(spawn 流式读 stderr,返回 stdout):空闲超时(默认 120s
+                         #   无任何输出才判挂起,SSW_GIT_TIMEOUT_MS 覆盖;持续有进度就续期,大仓库慢速
+                         #   clone 不被固定墙钟误杀——曾实测 400MB 浅克隆拖十几分钟被 120s 准时掐死)
                          #   + GIT_TERMINAL_PROMPT=0(禁交互式凭据提示,防 GUI/服务进程里看不到提示而永久"安装中")
                          #   + clone/pull --progress 进度段解析后兵分两路:TTY 渲染进度条到 stderr
                          #   (不污染 --json 的 stdout),同时写 gitProgress 内存表(listGitProgress)
@@ -349,7 +351,7 @@ electron-builder.yml     # 打包配置:Linux AppImage + Windows NSIS(中文安�
 - profile bundle 是**外部输入**:导入前全量预检条目 id/name(`assertSafeBundleEntry`),local 落盘目标断言在库目录内——恶意 bundle 的 `../../..` 不得穿越出库目录删写文件。
 - REST 服务仅监听 127.0.0.1 且**无认证**是既定设计,但必须有回环防护:Host 头非回环(防 DNS rebinding)或 Origin 跨站(防恶意网页 simple request)一律 403;数据文件落盘 0600(`ai.json`/`mcps.json` 含密钥)。
 - MCP apply 编辑的是用户可能手改过的配置文件(`.mcp.json`、`config.toml` 等):写前已有文件必进快照;JSON 损坏无法安全合并时原文件进快照、重写为仅含本项目条目并告警。
-- `skill add --github` 会执行 `git clone` 到库目录;`skill update` 会 `git pull --ff-only`。git 调用默认 120s 超时(`SSW_GIT_TIMEOUT_MS` 覆盖)且 `GIT_TERMINAL_PROMPT=0`(私有/不存在仓库直接报错而不是挂起等凭据)。URI 经 `normalizeGithubUri` 白名单式解析,只接受 `owner/repo` 或完整 GitHub URL;`--subdir` 只允许 `/` 分隔(显式拒绝 `\` 与 `:`),防 Windows 路径穿越导致库外目录被递归删除。
+- `skill add --github` 会执行 `git clone` 到库目录;`skill update` 会 `git pull --ff-only`。git 调用是**空闲超时**(默认 120s 内无任何输出才杀,`SSW_GIT_TIMEOUT_MS` 覆盖;持续有进度就续期——大仓库慢速克隆不误杀,只有真挂起才中止)且 `GIT_TERMINAL_PROMPT=0`(私有/不存在仓库直接报错而不是挂起等凭据)。URI 经 `normalizeGithubUri` 白名单式解析,只接受 `owner/repo` 或完整 GitHub URL;`--subdir` 只允许 `/` 分隔(显式拒绝 `\` 与 `:`),防 Windows 路径穿越导致库外目录被递归删除。
 - 桌面版 BrowserWindow 开 `contextIsolation: true`、`nodeIntegration: false`,服务仅监听 `127.0.0.1`。
 - Express 服务**无认证**:仅由桌面 App 进程内启动(`startServer(port, '127.0.0.1')`),不暴露网卡;若未来重新开放独立 Web 模式,需自行限制监听范围或套带认证的反向代理。
 - 不要把 `SSW_HOME` 指向的目录当作可信输入边界——它存放的就是本工具的全部状态,损坏时要容错而不是崩溃。

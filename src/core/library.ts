@@ -1,7 +1,8 @@
 /**
  * 中央库:安装(github→git clone --depth 1 / local→复制)、卸载、更新、自建脚手架。
  * 库是唯一事实来源,所有 skill 实体都存放在 ~/.skills-switch/library/ 下。
- * git 调用统一走 runGit:有超时(默认 120s,SSW_GIT_TIMEOUT_MS 覆盖)且禁用交互式
+ * git 调用统一走 runGit:空闲超时(默认 120s 无任何输出判挂起,SSW_GIT_TIMEOUT_MS
+ * 覆盖)——只要还有输出就续期,大仓库慢速克隆不被误杀;且禁用交互式
  * 凭据提示——本工具常跑在 GUI/服务进程里,git 一旦挂起或在用户看不到的终端等输入,
  * 表现就是前端永远"安装中…"。clone/pull 带 --progress,进度段解析后兵分两路:
  * TTY 下渲染单行进度条到 stderr;同时写入 gitProgress 内存表供 /api/progress
@@ -152,7 +153,9 @@ const MAX_GIT_OUTPUT = 16 * 1024 * 1024;
 /**
  * 执行 git 子命令,返回 stdout。失败都包装成可读的 LibraryError 而不是裸崩溃/挂死:
  * - git 不在 PATH(spawn ENOENT,Windows 常见)
- * - 超时:主动 SIGTERM 子进程(网络挂起等)
+ * - 空闲超时:timeoutMs 内无任何 stdout/stderr 输出才 SIGTERM(网络挂起等);
+ *   有进度就续期——曾按固定墙钟 120s 起算,几百 MB 的大仓库浅克隆(如 400MB 拖
+ *   十几分钟)即使一直在正常下载也被准时掐死,表现为"clone 永远失败"
  * - 凭据提示:GIT_TERMINAL_PROMPT=0 强制失败而非在控制终端等输入——
  *   GUI/服务进程里那个提示用户根本看不到,表现就是永久"安装中…"
  * 用 spawn 而非 execFile:流式读 stderr 才能实时渲染 clone/pull 进度条
@@ -172,6 +175,16 @@ async function runGit(args: string[], label?: string): Promise<string> {
     let killedByTimeout = false;
     let outputOverflow = false;
     let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    /** 空闲超时:任何输出都会重挂;只有安静满 timeoutMs 才判定挂起并杀掉 */
+    const armIdleTimeout = (): void => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        killedByTimeout = true;
+        child.kill('SIGTERM');
+      }, timeoutMs);
+    };
+    armIdleTimeout();
     const progress = label ? createProgressRenderer(label) : null;
     let pending = ''; // 未遇到分隔符的半段,留到下一块拼上
     /** 处理一段完整进度段:更新内存表(GUI 轮询)+ 渲染 TTY 进度条 */
@@ -188,14 +201,10 @@ async function runGit(args: string[], label?: string): Promise<string> {
       });
       progress?.renderSegment(seg);
     };
-    const timer = setTimeout(() => {
-      killedByTimeout = true;
-      child.kill('SIGTERM');
-    }, timeoutMs);
     const done = (err?: Error): void => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       if (pending.trim()) handleSegment(pending);
       progress?.end();
       if (label) gitProgress.delete(label); // 任务结束即摘表,GUI 请求返回后自行隐藏进度条
@@ -220,6 +229,8 @@ async function runGit(args: string[], label?: string): Promise<string> {
         pending = parts.pop() ?? '';
         for (const segRaw of parts) handleSegment(segRaw);
       }
+      if (killedByTimeout || outputOverflow) return; // 已被判死,不再续期
+      armIdleTimeout();
       if (!outputOverflow && stdout.length + stderr.length > MAX_GIT_OUTPUT) {
         outputOverflow = true;
         child.kill('SIGTERM');
@@ -231,7 +242,8 @@ async function runGit(args: string[], label?: string): Promise<string> {
     child.on('close', (code) => {
       if (killedByTimeout) {
         done(new LibraryError(
-          `git ${sub} 超时(${Math.round(timeoutMs / 1000)}s 未完成):网络访问 GitHub 过慢或不可达,请检查网络/代理后重试`,
+          `git ${sub} 超时(${Math.round(timeoutMs / 1000)}s 无任何输出,疑似网络挂起):已中止。` +
+          `慢网/大仓库下载中不会触发;若确实需更长安静等待,可设 SSW_GIT_TIMEOUT_MS 调大`,
         ));
       } else if (outputOverflow) {
         done(new LibraryError(`git ${sub} 失败: 输出超过 ${Math.round(MAX_GIT_OUTPUT / 1024 / 1024)}MB 上限`));
