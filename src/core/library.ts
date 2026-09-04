@@ -1,10 +1,10 @@
 /**
  * 中央库:安装(github→git clone --depth 1 / local→复制)、卸载、更新、自建脚手架。
  * 库是唯一事实来源,所有 skill 实体都存放在 ~/.skills-switch/library/ 下。
- * git 调用统一走 runGit:空闲超时(默认 120s 无任何输出判挂起,SSW_GIT_TIMEOUT_MS
- * 覆盖)——只要还有输出就续期,大仓库慢速克隆不被误杀;且禁用交互式
- * 凭据提示——本工具常跑在 GUI/服务进程里,git 一旦挂起或在用户看不到的终端等输入,
- * 表现就是前端永远"安装中…"。clone/pull 带 --progress,进度段解析后兵分两路:
+ * git 调用统一走 runGit:空闲超时(默认 10 分钟无任何输出判挂起,SSW_GIT_TIMEOUT_MS
+ * 覆盖)——有输出就续期,且大仓库 clone 的服务端算 pack 静默期(可达数分钟)不误杀;
+ * 另禁用交互式凭据提示——本工具常跑在 GUI/服务进程里,git 一旦挂起或在用户看不到的
+ * 终端等输入,表现就是前端永远"安装中…"。clone/pull 带 --progress,进度段解析后兵分两路:
  * TTY 下渲染单行进度条到 stderr;同时写入 gitProgress 内存表供 /api/progress
  * 轮询(GUI/Electron 进度条)——大仓库克隆要好几分钟,零输出会让用户以为死机。
  * 注意 git 输出随界面语言本地化(zh_CN 下是"接收对象中"而非 "Receiving objects"),
@@ -26,8 +26,13 @@ import type { SkillEntry } from './types.js';
 
 export class LibraryError extends Error {}
 
-/** git 调用默认超时:2 分钟;SSW_GIT_TIMEOUT_MS 可覆盖(慢网调大,测试调小) */
-const DEFAULT_GIT_TIMEOUT_MS = 120_000;
+/**
+ * git 调用默认空闲超时:10 分钟。超大仓库 clone 时 GitHub 服务端算浅克隆 pack 可能
+ * 几分钟零输出(客户端静默等待),之后才连续灌数据——120s 会把这种合法静默误杀
+ * (实测 400MB+ 大仓库先静默 2-3 分钟再以 ~0.5MB/s 流式下载十几分钟,120s 必失败)。
+ * SSW_GIT_TIMEOUT_MS 可覆盖(慢网调大,测试调小)。
+ */
+const DEFAULT_GIT_TIMEOUT_MS = 600_000;
 
 /** 每次调用重读环境变量(同 paths.ts 的测试隔离约定);非法值回退默认 */
 function gitTimeoutMs(): number {
@@ -154,8 +159,9 @@ const MAX_GIT_OUTPUT = 16 * 1024 * 1024;
  * 执行 git 子命令,返回 stdout。失败都包装成可读的 LibraryError 而不是裸崩溃/挂死:
  * - git 不在 PATH(spawn ENOENT,Windows 常见)
  * - 空闲超时:timeoutMs 内无任何 stdout/stderr 输出才 SIGTERM(网络挂起等);
- *   有进度就续期——曾按固定墙钟 120s 起算,几百 MB 的大仓库浅克隆(如 400MB 拖
- *   十几分钟)即使一直在正常下载也被准时掐死,表现为"clone 永远失败"
+ *   有输出就续期——曾按固定墙钟 120s 起算,几百 MB 的大仓库浅克隆(如 400MB 拖
+ *   十几分钟)即使一直在正常下载也被准时掐死;改空闲后又发现服务端算 pack 阶段
+ *   可静默数分钟,故默认窗口放宽到 10 分钟(测试用 SSW_GIT_TIMEOUT_MS 调小)
  * - 凭据提示:GIT_TERMINAL_PROMPT=0 强制失败而非在控制终端等输入——
  *   GUI/服务进程里那个提示用户根本看不到,表现就是永久"安装中…"
  * 用 spawn 而非 execFile:流式读 stderr 才能实时渲染 clone/pull 进度条
